@@ -34,8 +34,17 @@ export function supportAnyEventMouseMode(core: GhosttyCore): GhosttyCore {
   const observeMouseMode = (text: string) => {
     const control = controlTail + text;
     for (const match of control.matchAll(/\x1b\[\?([0-9;]*)([hl])/g)) {
-      if (match[1]?.split(";").includes("1003")) {
+      const modes = match[1]?.split(";") ?? [];
+      if (modes.includes("1003")) {
         anyEventMouse = match[2] === "h";
+      }
+      if (
+        match[2] === "l" &&
+        modes.some(
+          (mode) => mode === "47" || mode === "1047" || mode === "1049",
+        )
+      ) {
+        anyEventMouse = false;
       }
     }
     controlTail = control.slice(-64);
