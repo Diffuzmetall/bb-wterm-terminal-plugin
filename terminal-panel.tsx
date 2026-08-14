@@ -18,6 +18,10 @@ import { TerminalRenderer } from "./wterm-renderer.js";
 
 const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024;
 const MAX_FILE_UPLOAD_BYTES = 25 * 1024 * 1024;
+const DEFAULT_TERMINAL_FONT_SIZE = 14;
+const MIN_TERMINAL_FONT_SIZE = 10;
+const MAX_TERMINAL_FONT_SIZE = 24;
+const TERMINAL_FONT_SIZE_STORAGE_KEY = "wterm-terminal-font-size";
 const PLUGIN_ID = "wterm-terminal-preview";
 const IMAGE_EXTENSIONS = new Set([
   "avif",
@@ -42,6 +46,22 @@ type TransferState =
   | { kind: "uploading"; fileName: string }
   | { kind: "ready"; path: string }
   | { kind: "failed"; message: string };
+
+function readTerminalFontSize(): number {
+  try {
+    const value = Number.parseInt(
+      window.localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY) ?? "",
+      10,
+    );
+    return Number.isInteger(value) &&
+      value >= MIN_TERMINAL_FONT_SIZE &&
+      value <= MAX_TERMINAL_FONT_SIZE
+      ? value
+      : DEFAULT_TERMINAL_FONT_SIZE;
+  } catch {
+    return DEFAULT_TERMINAL_FONT_SIZE;
+  }
+}
 
 function errorMessage(value: unknown, fallback: string): string {
   return value && typeof value === "object" && "error" in value
@@ -229,6 +249,7 @@ function TerminalWithUpload({
   threadId: string;
 }) {
   const [transfer, setTransfer] = useState<TransferState>({ kind: "idle" });
+  const [fontSize, setFontSize] = useState(readTerminalFontSize);
   const inputRef = useRef<HTMLInputElement>(null);
   const activeUpload = useRef<AbortController | null>(null);
   const generation = useRef(0);
@@ -318,6 +339,24 @@ function TerminalWithUpload({
           ? `Failed: ${transfer.message}`
           : "Drop a file or paste an image";
 
+  const changeFontSize = (delta: number) => {
+    setFontSize((current) => {
+      const next = Math.min(
+        MAX_TERMINAL_FONT_SIZE,
+        Math.max(MIN_TERMINAL_FONT_SIZE, current + delta),
+      );
+      try {
+        window.localStorage.setItem(
+          TERMINAL_FONT_SIZE_STORAGE_KEY,
+          String(next),
+        );
+      } catch {
+        // The control still works for this tab when storage is unavailable.
+      }
+      return next;
+    });
+  };
+
   return (
     <div
       className="wterm-terminal-with-upload"
@@ -342,14 +381,47 @@ function TerminalWithUpload({
           onChange={onFileChange}
         />
         <span
-          className="min-w-0 truncate text-xs text-muted-foreground"
+          className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
           role="status"
         >
           {message}
         </span>
+        <div
+          className="flex shrink-0 items-center gap-1"
+          aria-label="Terminal font size controls"
+        >
+          <button
+            type="button"
+            aria-label="Decrease terminal font size"
+            disabled={fontSize <= MIN_TERMINAL_FONT_SIZE}
+            onClick={() => changeFontSize(-1)}
+            className="rounded border px-2 py-1 text-xs"
+          >
+            −
+          </button>
+          <span
+            aria-label="Terminal font size"
+            className="w-10 text-center text-xs tabular-nums"
+          >
+            {fontSize}px
+          </span>
+          <button
+            type="button"
+            aria-label="Increase terminal font size"
+            disabled={fontSize >= MAX_TERMINAL_FONT_SIZE}
+            onClick={() => changeFontSize(1)}
+            className="rounded border px-2 py-1 text-xs"
+          >
+            +
+          </button>
+        </div>
       </div>
       <div className="wterm-upload-terminal">
-        <TerminalRenderer terminalId={terminalId} attachment={attachment} />
+        <TerminalRenderer
+          terminalId={terminalId}
+          attachment={attachment}
+          fontSizePx={fontSize}
+        />
       </div>
     </div>
   );

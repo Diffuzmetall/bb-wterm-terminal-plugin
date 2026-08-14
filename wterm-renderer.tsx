@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { GhosttyCore } from "@wterm/ghostty";
 import { Terminal, type TerminalHandle } from "@wterm/react";
 import { z } from "zod";
@@ -9,8 +16,7 @@ import "@wterm/react/css";
 import "./wterm-renderer.css";
 
 const PLUGIN_ID = "wterm-terminal-preview";
-export const GHOSTTY_WASM_URL =
-  `/api/v1/plugins/${PLUGIN_ID}/http/ghostty-vt.wasm`;
+export const GHOSTTY_WASM_URL = `/api/v1/plugins/${PLUGIN_ID}/http/ghostty-vt.wasm`;
 
 /**
  * Ghostty WASM 0.3.4 discards mode 1003 before `mouseTracking()` can expose it.
@@ -94,17 +100,60 @@ export function hasRenderedSize(element: HTMLElement): boolean {
   return width > 0 && height > 0;
 }
 
+interface WtermFontMetricsBoundary {
+  cols: number;
+  element: HTMLElement;
+  rows: number;
+  resize(cols: number, rows: number): void;
+  _measureCharSize?: () => { charWidth: number; rowHeight: number } | null;
+}
+
+export function refitTerminalAfterFontChange(
+  instance: NonNullable<TerminalHandle["instance"]>,
+): boolean {
+  const terminal = instance as unknown as WtermFontMetricsBoundary;
+  const metrics = terminal._measureCharSize?.();
+  if (!metrics || !hasRenderedSize(terminal.element)) return false;
+
+  const style = getComputedStyle(terminal.element);
+  const contentWidth =
+    terminal.element.clientWidth -
+    (Number.parseFloat(style.paddingLeft) || 0) -
+    (Number.parseFloat(style.paddingRight) || 0);
+  const contentHeight =
+    terminal.element.clientHeight -
+    (Number.parseFloat(style.paddingTop) || 0) -
+    (Number.parseFloat(style.paddingBottom) || 0);
+  const cols = Math.max(1, Math.floor(contentWidth / metrics.charWidth));
+  const rows = Math.max(1, Math.floor(contentHeight / metrics.rowHeight));
+  if (cols === terminal.cols && rows === terminal.rows) return false;
+
+  terminal.resize(cols, rows);
+  return true;
+}
+
+type TerminalFontStyle = CSSProperties & {
+  "--term-font-size": string;
+  "--term-row-height": string;
+};
+
 export function WtermRenderer({
   attachment,
+  fontSizePx = 14,
   wasmUrl = GHOSTTY_WASM_URL,
 }: {
   attachment: TerminalAttachment;
+  fontSizePx?: number;
   wasmUrl?: string;
 }) {
   const terminalRef = useRef<TerminalHandle>(null);
   const [core, setCore] = useState<GhosttyCore | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [ready, setReady] = useState(false);
+  const terminalFontStyle: TerminalFontStyle = {
+    "--term-font-size": `${fontSizePx}px`,
+    "--term-row-height": `${Math.ceil(fontSizePx * 1.2)}px`,
+  };
 
   useEffect(() => {
     let alive = true;
@@ -130,6 +179,11 @@ export function WtermRenderer({
       terminalRef.current?.write(bytes),
     );
   }, [attachment, ready]);
+
+  useLayoutEffect(() => {
+    const instance = terminalRef.current?.instance;
+    if (ready && instance) refitTerminalAfterFontChange(instance);
+  }, [fontSizePx, ready]);
 
   const handleResize = useCallback(
     (cols: number, rows: number) => {
@@ -166,6 +220,7 @@ export function WtermRenderer({
       onError={setError}
       onData={(data) => attachment.sendInput(new TextEncoder().encode(data))}
       onResize={handleResize}
+      style={terminalFontStyle}
       className="wterm-renderer"
       data-renderer="ghostty"
     />
@@ -175,9 +230,11 @@ export function WtermRenderer({
 export function TerminalRenderer({
   terminalId,
   attachment,
+  fontSizePx = 14,
 }: {
   terminalId: string;
   attachment: TerminalAttachment | null;
+  fontSizePx?: number;
 }) {
   if (!attachment) {
     return (
@@ -188,7 +245,11 @@ export function TerminalRenderer({
   }
   return (
     <div className="wterm-renderer-panel" data-terminal-id={terminalId}>
-      <WtermRenderer key={terminalId} attachment={attachment} />
+      <WtermRenderer
+        key={terminalId}
+        attachment={attachment}
+        fontSizePx={fontSizePx}
+      />
     </div>
   );
 }
