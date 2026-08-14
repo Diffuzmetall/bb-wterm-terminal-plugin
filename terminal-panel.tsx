@@ -8,11 +8,12 @@ import {
   type DragEvent,
   type ReactNode,
 } from "react";
-import { experimental_useTerminalAttachment } from "@bb/plugin-sdk/app";
-import type {
-  ExperimentalTerminalAttachment,
-  PluginThreadPanelProps,
-} from "@bb/plugin-sdk/app";
+import * as BbApp from "@bb/plugin-sdk/app";
+import type { PluginThreadPanelProps } from "@bb/plugin-sdk/app";
+import {
+  useLegacyTerminalAttachment,
+  type TerminalAttachment,
+} from "./terminal-attachment.js";
 import { TerminalRenderer } from "./wterm-renderer.js";
 
 const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -162,10 +163,53 @@ function AttachedTerminal({
   threadId: string;
   terminalId: string;
 }) {
-  const attachment = experimental_useTerminalAttachment({
-    threadId,
-    terminalId,
-  });
+  const useHostAttachment = Reflect.get(
+    BbApp,
+    "experimental_useTerminalAttachment",
+  ) as TerminalAttachmentHook | undefined;
+  return useHostAttachment ? (
+    <HostAttachedTerminal
+      threadId={threadId}
+      terminalId={terminalId}
+      useAttachment={useHostAttachment}
+    />
+  ) : (
+    <LegacyAttachedTerminal threadId={threadId} terminalId={terminalId} />
+  );
+}
+
+type TerminalAttachmentHook = (options: {
+  threadId: string;
+  terminalId: string;
+}) => TerminalAttachment | null;
+
+function HostAttachedTerminal({
+  threadId,
+  terminalId,
+  useAttachment,
+}: {
+  threadId: string;
+  terminalId: string;
+  useAttachment: TerminalAttachmentHook;
+}) {
+  const attachment = useAttachment({ threadId, terminalId });
+  return (
+    <TerminalWithUpload
+      threadId={threadId}
+      terminalId={terminalId}
+      attachment={attachment}
+    />
+  );
+}
+
+function LegacyAttachedTerminal({
+  threadId,
+  terminalId,
+}: {
+  threadId: string;
+  terminalId: string;
+}) {
+  const attachment = useLegacyTerminalAttachment(terminalId);
   return (
     <TerminalWithUpload
       threadId={threadId}
@@ -180,7 +224,7 @@ function TerminalWithUpload({
   terminalId,
   threadId,
 }: {
-  attachment: ExperimentalTerminalAttachment | null;
+  attachment: TerminalAttachment | null;
   terminalId: string;
   threadId: string;
 }) {

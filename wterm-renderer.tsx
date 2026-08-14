@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ExperimentalTerminalAttachment } from "@bb/plugin-sdk/app";
 import { GhosttyCore } from "@wterm/ghostty";
 import { Terminal, type TerminalHandle } from "@wterm/react";
+import type { TerminalAttachment } from "./terminal-attachment.js";
 // @ts-expect-error CSS side effects are resolved by the plugin bundler.
 import "@wterm/react/css";
 // @ts-expect-error CSS side effects are resolved by the plugin bundler.
@@ -59,7 +59,7 @@ export function WtermRenderer({
   attachment,
   wasmUrl = GHOSTTY_WASM_URL,
 }: {
-  attachment: ExperimentalTerminalAttachment;
+  attachment: TerminalAttachment;
   wasmUrl?: string;
 }) {
   const terminalRef = useRef<TerminalHandle>(null);
@@ -138,7 +138,7 @@ export function TerminalRenderer({
   attachment,
 }: {
   terminalId: string;
-  attachment: ExperimentalTerminalAttachment | null;
+  attachment: TerminalAttachment | null;
 }) {
   if (!attachment) {
     return (

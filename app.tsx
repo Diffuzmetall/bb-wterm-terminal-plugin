@@ -1,10 +1,10 @@
 import { lazy, useEffect, useRef, useState } from "react";
 import {
 	definePluginApp,
-	experimental_useReplaceCurrentPluginTab,
 	useBbContext,
 	useRpc,
 } from "@bb/plugin-sdk/app";
+import * as BbApp from "@bb/plugin-sdk/app";
 import type { wtermRpcContract } from "./server";
 
 const TerminalPanel = lazy(() => import("./terminal-panel.js"));
@@ -167,6 +167,79 @@ function Panel({
 		return <TerminalPanel threadId={threadId} params={params} />;
 	return <Picker key={threadId} threadId={threadId} replace={replace} />;
 }
+
+type ReplaceCurrentPluginTabHook = () => (input: {
+	actionId: string;
+	title: string;
+	params: never;
+}) => void;
+
+function HostTerminalAction({
+	threadId,
+	params,
+	useReplaceCurrent,
+}: {
+	threadId: string;
+	params: unknown;
+	useReplaceCurrent: ReplaceCurrentPluginTabHook;
+}) {
+	const replaceCurrent = useReplaceCurrent();
+	return (
+		<Panel
+			threadId={threadId}
+			params={params}
+			replace={(nextParams) =>
+				replaceCurrent({
+					actionId: "terminal",
+					title: "Wterm terminal",
+					params: nextParams as never,
+				})
+			}
+		/>
+	);
+}
+
+function LegacyTerminalAction({
+	threadId,
+	params,
+}: {
+	threadId: string;
+	params: unknown;
+}) {
+	const storageKey = `bb.wterm-terminal-preview.${threadId}`;
+	const [currentParams, setCurrentParams] = useState<unknown>(() => {
+		if (hasTerminalParams(params)) return params;
+		try {
+			const saved = window.localStorage.getItem(storageKey);
+			if (saved) {
+				const parsed: unknown = JSON.parse(saved);
+				if (hasTerminalParams(parsed)) return parsed;
+			}
+		} catch {}
+		return null;
+	});
+	const replace = (nextParams: unknown) => {
+		setCurrentParams(nextParams);
+		try {
+			window.localStorage.setItem(storageKey, JSON.stringify(nextParams));
+		} catch {}
+	};
+	return (
+		<Panel threadId={threadId} params={currentParams} replace={replace} />
+	);
+}
+
+function hasTerminalParams(value: unknown): boolean {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"schemaVersion" in value &&
+		(value as { schemaVersion?: unknown }).schemaVersion === 1 &&
+		"terminalId" in value &&
+		typeof (value as { terminalId?: unknown }).terminalId === "string"
+	);
+}
+
 export default definePluginApp((app) => {
 	app.slots.threadPanelAction({
 		id: "terminal",
@@ -175,19 +248,19 @@ export default definePluginApp((app) => {
 		layout: "flush",
 		component: function TerminalAction({ threadId, params }) {
 			const { threadId: contextThreadId } = useBbContext();
-			const replaceCurrent = experimental_useReplaceCurrentPluginTab();
-			const replace = (params: unknown) =>
-				replaceCurrent({
-					actionId: "terminal",
-					title: "Wterm terminal",
-					params: params as never,
-				});
-			return (
-				<Panel
-					threadId={threadId || contextThreadId || ""}
+			const currentThreadId = threadId || contextThreadId || "";
+			const useReplaceCurrent = Reflect.get(
+				BbApp,
+				"experimental_useReplaceCurrentPluginTab",
+			) as ReplaceCurrentPluginTabHook | undefined;
+			return useReplaceCurrent ? (
+				<HostTerminalAction
+					threadId={currentThreadId}
 					params={params}
-					replace={replace}
+					useReplaceCurrent={useReplaceCurrent}
 				/>
+			) : (
+				<LegacyTerminalAction threadId={currentThreadId} params={params} />
 			);
 		},
 	});
