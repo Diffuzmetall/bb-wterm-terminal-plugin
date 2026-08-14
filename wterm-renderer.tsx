@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GhosttyCore } from "@wterm/ghostty";
 import { Terminal, type TerminalHandle } from "@wterm/react";
+import { z } from "zod";
 import type { TerminalAttachment } from "./terminal-attachment.js";
 // @ts-expect-error CSS side effects are resolved by the plugin bundler.
 import "@wterm/react/css";
@@ -11,31 +12,67 @@ const PLUGIN_ID = "wterm-terminal-preview";
 export const GHOSTTY_WASM_URL =
   `/api/v1/plugins/${PLUGIN_ID}/http/ghostty-vt.wasm`;
 
+/**
+ * Ghostty WASM 0.3.4 discards mode 1003 before `mouseTracking()` can expose it.
+ * Track that one DEC mode at the write boundary, then let Wterm DOM provide
+ * its supported click, wheel, and button-drag subset through mode 1002.
+ */
+export function supportAnyEventMouseMode(core: GhosttyCore): GhosttyCore {
+  const decodeMouseControl = new TextDecoder("latin1");
+  const writeRaw = core.writeRaw.bind(core);
+  const writeString = core.writeString.bind(core);
+  const supportedMode = core.mouseTracking.bind(core);
+  let anyEventMouse = false;
+  let controlTail = "";
+
+  const observeMouseMode = (text: string) => {
+    const control = controlTail + text;
+    for (const match of control.matchAll(/\x1b\[\?([0-9;]*)([hl])/g)) {
+      if (match[1]?.split(";").includes("1003")) {
+        anyEventMouse = match[2] === "h";
+      }
+    }
+    controlTail = control.slice(-64);
+  };
+
+  core.writeRaw = (data) => {
+    observeMouseMode(decodeMouseControl.decode(data));
+    writeRaw(data);
+  };
+  core.writeString = (data) => {
+    observeMouseMode(data);
+    writeString(data);
+  };
+  core.mouseTracking = () => (anyEventMouse ? 1002 : supportedMode());
+  return core;
+}
+
 async function pluginToken(): Promise<string> {
   const response = await fetch(`/api/v1/plugins/${PLUGIN_ID}/token`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: "{}",
+    signal: AbortSignal.timeout(10_000),
   });
   const json: unknown = await response.json().catch(() => null);
-  const token =
-    json && typeof json === "object" && "token" in json
-      ? (json as { token: unknown }).token
-      : undefined;
-  if (!response.ok || typeof token !== "string") {
+  const parsed = z.object({ token: z.string() }).safeParse(json);
+  if (!response.ok || !parsed.success) {
     throw new Error(`WASM token request failed (HTTP ${response.status})`);
   }
-  return token;
+  return parsed.data.token;
 }
 
 export async function loadGhosttyCore(
   wasmUrl = GHOSTTY_WASM_URL,
 ): Promise<GhosttyCore> {
   if (wasmUrl !== GHOSTTY_WASM_URL) {
-    return GhosttyCore.load({ wasmPath: wasmUrl });
+    return supportAnyEventMouseMode(
+      await GhosttyCore.load({ wasmPath: wasmUrl }),
+    );
   }
   const response = await fetch(wasmUrl, {
     headers: { "x-bb-plugin-token": await pluginToken() },
+    signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) {
     throw new Error(`WASM request failed (HTTP ${response.status})`);
@@ -44,7 +81,9 @@ export async function loadGhosttyCore(
     new Blob([await response.arrayBuffer()], { type: "application/wasm" }),
   );
   try {
-    return await GhosttyCore.load({ wasmPath: objectUrl });
+    return supportAnyEventMouseMode(
+      await GhosttyCore.load({ wasmPath: objectUrl }),
+    );
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
