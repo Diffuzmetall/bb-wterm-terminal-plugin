@@ -7,13 +7,47 @@ import "@wterm/react/css";
 // @ts-expect-error CSS side effects are resolved by the plugin bundler.
 import "./wterm-renderer.css";
 
-/** The URL emitted by the plugin asset packager for the declared Ghostty WASM asset. */
-export const GHOSTTY_WASM_URL = new URL("./ghostty-vt.wasm", import.meta.url)
-  .href;
-export function loadGhosttyCore(
+const PLUGIN_ID = "wterm-terminal-preview";
+export const GHOSTTY_WASM_URL =
+  `/api/v1/plugins/${PLUGIN_ID}/http/ghostty-vt.wasm`;
+
+async function pluginToken(): Promise<string> {
+  const response = await fetch(`/api/v1/plugins/${PLUGIN_ID}/token`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+  const json: unknown = await response.json().catch(() => null);
+  const token =
+    json && typeof json === "object" && "token" in json
+      ? (json as { token: unknown }).token
+      : undefined;
+  if (!response.ok || typeof token !== "string") {
+    throw new Error(`WASM token request failed (HTTP ${response.status})`);
+  }
+  return token;
+}
+
+export async function loadGhosttyCore(
   wasmUrl = GHOSTTY_WASM_URL,
 ): Promise<GhosttyCore> {
-  return GhosttyCore.load({ wasmPath: wasmUrl });
+  if (wasmUrl !== GHOSTTY_WASM_URL) {
+    return GhosttyCore.load({ wasmPath: wasmUrl });
+  }
+  const response = await fetch(wasmUrl, {
+    headers: { "x-bb-plugin-token": await pluginToken() },
+  });
+  if (!response.ok) {
+    throw new Error(`WASM request failed (HTTP ${response.status})`);
+  }
+  const objectUrl = URL.createObjectURL(
+    new Blob([await response.arrayBuffer()], { type: "application/wasm" }),
+  );
+  try {
+    return await GhosttyCore.load({ wasmPath: objectUrl });
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 
 export function hasRenderedSize(element: HTMLElement): boolean {

@@ -2,6 +2,8 @@
 
 Private standalone build of the current Wterm terminal work from BB commit
 `2dcf5960c` (V1 terminal attachment, V2 reconnect, V3 host file upload).
+Version `0.3.1` serves Ghostty WASM through the authenticated plugin route so
+it also installs on BB builds whose manifest schema predates `bb.assets`.
 
 ## Requirements
 
@@ -15,7 +17,7 @@ Private standalone build of the current Wterm terminal work from BB commit
 ```sh
 gh auth status
 gh auth setup-git
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.0' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.1' --yes
 bb plugin list
 ```
 

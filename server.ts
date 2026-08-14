@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { posix as path } from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
 import { z } from "zod";
@@ -7,6 +8,7 @@ import { z } from "zod";
 export const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MAX_FILE_UPLOAD_BYTES = 25 * 1024 * 1024;
 const UPLOAD_PATH = "/upload";
+const WASM_PATH = "/ghostty-vt.wasm";
 const UPLOAD_DIRECTORY = ".bb-wterm-uploads";
 const IMAGE_EXTENSIONS = new Set([
 	"avif",
@@ -246,4 +248,14 @@ export default function plugin(bb: BbPluginApi) {
 	bb.http.route("POST", UPLOAD_PATH, (context) => handleUpload(bb, context), {
 		auth: "token",
 	});
+	bb.http.route(
+		"GET",
+		WASM_PATH,
+		async () =>
+			new Response(
+				await readFile(new URL("../ghostty-vt.wasm", import.meta.url)),
+				{ headers: { "content-type": "application/wasm" } },
+			),
+		{ auth: "token" },
+	);
 }

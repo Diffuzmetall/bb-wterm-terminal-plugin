@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-wterm-terminal-preview",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Ghostty-backed, thread-scoped terminal for BB with reconnect and file upload.",
   "private": true,
   "license": "MIT",
@@ -16,14 +16,7 @@
       "icon": "Terminal"
     },
     "server": "./server.ts",
-    "app": "./app.tsx",
-    "assets": [
-      {
-        "package": "@wterm/ghostty",
-        "path": "wasm/ghostty-vt.wasm",
-        "file": "ghostty-vt.wasm"
-      }
-    ]
+    "app": "./app.tsx"
   },
   "dependencies": {
     "@wterm/dom": "0.3.4",
