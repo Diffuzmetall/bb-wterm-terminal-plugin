@@ -8,7 +8,6 @@ import {
   type DragEvent,
   type ReactNode,
 } from "react";
-import * as BbApp from "@bb/plugin-sdk/app";
 import type { PluginThreadPanelProps } from "@bb/plugin-sdk/app";
 import {
   useLegacyTerminalAttachment,
@@ -183,43 +182,7 @@ function AttachedTerminal({
   threadId: string;
   terminalId: string;
 }) {
-  const useHostAttachment = Reflect.get(
-    BbApp,
-    "experimental_useTerminalAttachment",
-  ) as TerminalAttachmentHook | undefined;
-  return useHostAttachment ? (
-    <HostAttachedTerminal
-      threadId={threadId}
-      terminalId={terminalId}
-      useAttachment={useHostAttachment}
-    />
-  ) : (
-    <LegacyAttachedTerminal threadId={threadId} terminalId={terminalId} />
-  );
-}
-
-type TerminalAttachmentHook = (options: {
-  threadId: string;
-  terminalId: string;
-}) => TerminalAttachment | null;
-
-function HostAttachedTerminal({
-  threadId,
-  terminalId,
-  useAttachment,
-}: {
-  threadId: string;
-  terminalId: string;
-  useAttachment: TerminalAttachmentHook;
-}) {
-  const attachment = useAttachment({ threadId, terminalId });
-  return (
-    <TerminalWithUpload
-      threadId={threadId}
-      terminalId={terminalId}
-      attachment={attachment}
-    />
-  );
+  return <LegacyAttachedTerminal threadId={threadId} terminalId={terminalId} />;
 }
 
 function LegacyAttachedTerminal({
