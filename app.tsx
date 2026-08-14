@@ -1,9 +1,5 @@
 import { lazy, useEffect, useRef, useState } from "react";
-import {
-	definePluginApp,
-	useBbContext,
-	useRpc,
-} from "@bb/plugin-sdk/app";
+import { definePluginApp, useBbContext, useRpc } from "@bb/plugin-sdk/app";
 import * as BbApp from "@bb/plugin-sdk/app";
 import type { wtermRpcContract } from "./server";
 
@@ -23,9 +19,11 @@ const isActive = (item: Session) => {
 function Picker({
 	threadId,
 	replace,
+	notice,
 }: {
 	threadId: string;
 	replace: (params: unknown) => void;
+	notice?: string;
 }) {
 	const rpc = useRpc<typeof wtermRpcContract>();
 	const [items, setItems] = useState<Session[]>([]);
@@ -36,14 +34,16 @@ function Picker({
 	useEffect(() => {
 		request.current.mounted = true;
 		const generation = request.current.generation;
-		rpc.call("listSessions", { threadId }).then(
-			(next) => {
-				if (isCurrent(generation)) setItems(next);
-			},
-			() => {
-				if (isCurrent(generation)) setItems([]);
-			},
-		)
+		rpc
+			.call("listSessions", { threadId })
+			.then(
+				(next) => {
+					if (isCurrent(generation)) setItems(next);
+				},
+				() => {
+					if (isCurrent(generation)) setItems([]);
+				},
+			)
 			.catch(() => {});
 		return () => {
 			request.current.mounted = false;
@@ -93,6 +93,7 @@ function Picker({
 	return (
 		<div className="flex h-full min-h-0 flex-col gap-3 overflow-auto p-4">
 			<h2 className="text-sm font-medium">Wterm terminal</h2>
+			{notice ? <p role="alert">{notice}</p> : null}
 			<button
 				type="button"
 				disabled={creating}
@@ -149,6 +150,78 @@ function Picker({
 		</div>
 	);
 }
+
+type TerminalParams = { schemaVersion: 1; terminalId: string };
+
+function SelectedTerminal({
+	threadId,
+	params,
+	replace,
+}: {
+	threadId: string;
+	params: TerminalParams;
+	replace: (params: unknown) => void;
+}) {
+	const rpc = useRpc<typeof wtermRpcContract>();
+	const replaceRef = useRef(replace);
+	const [retry, setRetry] = useState(0);
+	const [state, setState] = useState<
+		"checking" | "ready" | "missing" | "error"
+	>("checking");
+	replaceRef.current = replace;
+
+	useEffect(() => {
+		let cancelled = false;
+		setState("checking");
+		rpc
+			.call("listSessions", { threadId })
+			.then(
+				(items) => {
+					if (cancelled) return;
+					const selected = items.find((item) => item.id === params.terminalId);
+					if (selected && isActive(selected)) {
+						setState("ready");
+						return;
+					}
+					setState("missing");
+					replaceRef.current(null);
+				},
+				() => {
+					if (!cancelled) setState("error");
+				},
+			)
+			.catch(() => {});
+		return () => {
+			cancelled = true;
+		};
+	}, [params.terminalId, retry, rpc, threadId]);
+
+	if (state === "ready")
+		return <TerminalPanel threadId={threadId} params={params} />;
+	if (state === "missing")
+		return (
+			<Picker
+				threadId={threadId}
+				replace={replace}
+				notice="Terminal session is no longer available."
+			/>
+		);
+	if (state === "error")
+		return (
+			<div className="flex h-full flex-col items-start gap-3 p-4">
+				<p role="alert">Could not verify the terminal session.</p>
+				<button
+					type="button"
+					className="rounded border px-3 py-2 text-sm"
+					onClick={() => setRetry((current) => current + 1)}
+				>
+					Retry
+				</button>
+			</div>
+		);
+	return <div className="p-4 text-sm">Checking terminal session…</div>;
+}
+
 function Panel({
 	threadId,
 	params,
@@ -158,13 +231,10 @@ function Panel({
 	params: unknown;
 	replace: (params: unknown) => void;
 }) {
-	if (
-		typeof params === "object" &&
-		params !== null &&
-		"schemaVersion" in params &&
-		(params as { schemaVersion?: unknown }).schemaVersion === 1
-	)
-		return <TerminalPanel threadId={threadId} params={params} />;
+	if (hasTerminalParams(params))
+		return (
+			<SelectedTerminal threadId={threadId} params={params} replace={replace} />
+		);
 	return <Picker key={threadId} threadId={threadId} replace={replace} />;
 }
 
@@ -224,19 +294,18 @@ function LegacyTerminalAction({
 			window.localStorage.setItem(storageKey, JSON.stringify(nextParams));
 		} catch {}
 	};
-	return (
-		<Panel threadId={threadId} params={currentParams} replace={replace} />
-	);
+	return <Panel threadId={threadId} params={currentParams} replace={replace} />;
 }
 
-function hasTerminalParams(value: unknown): boolean {
+function hasTerminalParams(value: unknown): value is TerminalParams {
 	return (
 		typeof value === "object" &&
 		value !== null &&
 		"schemaVersion" in value &&
 		(value as { schemaVersion?: unknown }).schemaVersion === 1 &&
 		"terminalId" in value &&
-		typeof (value as { terminalId?: unknown }).terminalId === "string"
+		typeof (value as { terminalId?: unknown }).terminalId === "string" &&
+		(value as { terminalId: string }).terminalId.length > 0
 	);
 }
 
