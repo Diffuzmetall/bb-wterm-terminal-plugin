@@ -173,11 +173,15 @@ function SelectedTerminal({
 	useEffect(() => {
 		let cancelled = false;
 		setState("checking");
+		const timeout = window.setTimeout(() => {
+			if (!cancelled) setState("error");
+		}, 10_000);
 		rpc
 			.call("listSessions", { threadId })
 			.then(
 				(items) => {
 					if (cancelled) return;
+					window.clearTimeout(timeout);
 					const selected = items.find((item) => item.id === params.terminalId);
 					if (selected && isActive(selected)) {
 						setState("ready");
@@ -187,12 +191,16 @@ function SelectedTerminal({
 					replaceRef.current(null);
 				},
 				() => {
-					if (!cancelled) setState("error");
+					if (!cancelled) {
+						window.clearTimeout(timeout);
+						setState("error");
+					}
 				},
 			)
 			.catch(() => {});
 		return () => {
 			cancelled = true;
+			window.clearTimeout(timeout);
 		};
 	}, [params.terminalId, retry, rpc, threadId]);
 
