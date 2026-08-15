@@ -9,6 +9,7 @@ export const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MAX_FILE_UPLOAD_BYTES = 25 * 1024 * 1024;
 const UPLOAD_PATH = "/upload";
 const WASM_PATH = "/ghostty-vt.wasm";
+const NERD_FONT_PATH = "/symbols-nerd-font-mono-v3.5.0.woff2";
 const UPLOAD_DIRECTORY = ".bb-wterm-uploads";
 const IMAGE_EXTENSIONS = new Set([
 	"avif",
@@ -49,6 +50,16 @@ export const wtermRpcContract = defineRpcContract({
 	},
 });
 type Session = z.infer<typeof session>;
+
+export function bundledNerdFontUrl(moduleUrl = import.meta.url): URL {
+	const builtModule = new URL(".", moduleUrl).pathname.endsWith("/dist/");
+	return new URL(
+		builtModule
+			? "../SymbolsNerdFontMono-Regular.woff2"
+			: "./SymbolsNerdFontMono-Regular.woff2",
+		moduleUrl,
+	);
+}
 
 type PluginHttpContext = Parameters<
 	Parameters<BbPluginApi["http"]["route"]>[2]
@@ -255,6 +266,22 @@ export default function plugin(bb: BbPluginApi) {
 			new Response(
 				await readFile(new URL("../ghostty-vt.wasm", import.meta.url)),
 				{ headers: { "content-type": "application/wasm" } },
+			),
+		{ auth: "token" },
+	);
+	bb.http.route(
+		"GET",
+		NERD_FONT_PATH,
+		async () =>
+			new Response(
+				await readFile(bundledNerdFontUrl()),
+				{
+					headers: {
+						"cache-control": "public, max-age=31536000, immutable",
+						"content-type": "font/woff2",
+						"x-content-type-options": "nosniff",
+					},
+				},
 			),
 		{ auth: "token" },
 	);

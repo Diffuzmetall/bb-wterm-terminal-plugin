@@ -18,6 +18,9 @@ import "./wterm-renderer.css";
 
 const PLUGIN_ID = "wterm-terminal-preview";
 export const GHOSTTY_WASM_URL = `/api/v1/plugins/${PLUGIN_ID}/http/ghostty-vt.wasm`;
+export const NERD_FONT_URL = `/api/v1/plugins/${PLUGIN_ID}/http/symbols-nerd-font-mono-v3.5.0.woff2`;
+export const NERD_FONT_FAMILY = "Wterm Symbols Nerd Font Mono";
+const nerdFontLoads = new WeakMap<object, Promise<void>>();
 
 /**
  * Ghostty WASM 0.3.4 discards mode 1003 before `mouseTracking()` can expose it.
@@ -105,6 +108,36 @@ export async function loadGhosttyCore(
   }
 }
 
+export async function loadNerdFont(
+  fontFaceSet: Pick<FontFaceSet, "add"> = document.fonts,
+): Promise<void> {
+  const key = fontFaceSet as object;
+  const cached = nerdFontLoads.get(key);
+  if (cached) return cached;
+
+  const pending = (async () => {
+    const response = await fetch(NERD_FONT_URL, {
+      headers: { "x-bb-plugin-token": await pluginToken() },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      throw new Error(`font request failed (HTTP ${response.status})`);
+    }
+    const face = new FontFace(
+      NERD_FONT_FAMILY,
+      await response.arrayBuffer(),
+      { style: "normal", weight: "400" },
+    );
+    fontFaceSet.add(await face.load());
+  })();
+  const retryable = pending.catch((error: unknown) => {
+    nerdFontLoads.delete(key);
+    throw error;
+  });
+  nerdFontLoads.set(key, retryable);
+  return retryable;
+}
+
 export function hasRenderedSize(element: HTMLElement): boolean {
   const { width, height } = element.getBoundingClientRect();
   return width > 0 && height > 0;
@@ -143,6 +176,7 @@ export function refitTerminalAfterFontChange(
 }
 
 type TerminalFontStyle = CSSProperties & {
+  "--term-font-family": string;
   "--term-font-size": string;
   "--term-row-height": string;
 };
@@ -163,6 +197,8 @@ export function WtermRenderer({
   const clearSelectionBoundaryRef = useRef<(() => void) | null>(null);
   const followBottomRef = useRef(true);
   const terminalFontStyle: TerminalFontStyle = {
+    "--term-font-family":
+      `Menlo, Consolas, "DejaVu Sans Mono", "Courier New", "${NERD_FONT_FAMILY}", monospace`,
     "--term-font-size": `${fontSizePx}px`,
     "--term-row-height": `${Math.ceil(fontSizePx * 1.2)}px`,
   };
@@ -172,6 +208,7 @@ export function WtermRenderer({
     setCore(null);
     setError(null);
     setReady(false);
+    void loadNerdFont().catch(() => undefined);
     void loadGhosttyCore(wasmUrl).then(
       (loaded) => {
         if (alive) setCore(loaded);

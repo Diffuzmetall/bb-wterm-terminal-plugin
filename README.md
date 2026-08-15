@@ -12,6 +12,8 @@ This repository is an early public preview. The plugin ID is
 ## Features
 
 - Ghostty terminal emulation through `@wterm/ghostty` and WebAssembly.
+- Bundled Symbols Nerd Font Mono fallback for Powerline, Starship, and Nerd
+  Font prompt icons; no local font installation is required.
 - Every **Wterm terminal** tab starts an independent thread-scoped terminal;
   opening another tab never reuses or replaces the current session.
 - Select and restart existing thread-scoped BB terminal sessions when needed.
@@ -37,7 +39,7 @@ This repository is an early public preview. The plugin ID is
 Install the pinned release:
 
 ```sh
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.12' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.13' --yes
 bb plugin source wterm-terminal-preview
 ```
 
@@ -62,7 +64,18 @@ a pinned tag requires installing the newer tag explicitly.
 - When a TUI such as Herdr has enabled mouse tracking, click and drag are sent
   to the TUI. Hold `Shift` while dragging to use browser-native selection.
 - A completed native selection is copied to the clipboard when browser
-  permissions allow it.
+permissions allow it.
+
+## Renderer and shell
+
+The plugin uses `libghostty` through `@wterm/ghostty` as its VT and Unicode
+core. `@wterm/dom` paints that state as an HTML terminal grid, so settings from
+the native Ghostty application do not control this embedded terminal. The
+bundled Nerd Font fallback supplies prompt icons consistently across machines.
+
+Seeing `zsh` is normal: it is the shell process running inside the Ghostty-backed
+terminal. A separate neighbouring native `zsh` tab is different; that means the
+BB host does not yet support `experimental_claimedTerminalId`.
 
 ## File and image transfer
 
@@ -111,8 +124,8 @@ bb plugin build .
 ```
 
 The build produces the frontend and server bundles in `dist/` and copies
-`ghostty-vt.wasm` as a declared plugin asset. Generated dependencies and build
-output are intentionally not committed.
+`ghostty-vt.wasm` and the bundled Nerd Font from the repository. Generated
+dependencies and build output are intentionally not committed.
 
 ## License
 
@@ -121,3 +134,6 @@ output are intentionally not committed.
 The bundled Ghostty WASM renderer comes from
 [`@wterm/ghostty`](https://github.com/vercel-labs/wterm/tree/main/packages/%40wterm/ghostty),
 which is distributed under the Apache-2.0 license.
+
+`SymbolsNerdFontMono-Regular.woff2` comes from Nerd Fonts v3.5.0 and is
+distributed under the included [MIT license](LICENSE-NERD-FONTS-SYMBOLS).
