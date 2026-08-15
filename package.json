@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-wterm-terminal-preview",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "description": "Ghostty-backed, thread-scoped terminal for BB with file upload and font controls.",
   "private": true,
   "license": "MIT",

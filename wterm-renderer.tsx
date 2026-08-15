@@ -5,6 +5,7 @@ import {
   useState,
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
+  type UIEvent as ReactUIEvent,
 } from "react";
 import { GhosttyCore } from "@wterm/ghostty";
 import { Terminal, type TerminalHandle } from "@wterm/react";
@@ -160,6 +161,7 @@ export function WtermRenderer({
   const [error, setError] = useState<unknown>(null);
   const [ready, setReady] = useState(false);
   const clearSelectionBoundaryRef = useRef<(() => void) | null>(null);
+  const followBottomRef = useRef(true);
   const terminalFontStyle: TerminalFontStyle = {
     "--term-font-size": `${fontSizePx}px`,
     "--term-row-height": `${Math.ceil(fontSizePx * 1.2)}px`,
@@ -192,11 +194,23 @@ export function WtermRenderer({
 
   useEffect(() => {
     if (!ready) return;
+    const shouldRestoreBottom = followBottomRef.current;
+    let settleFrame: number | null = null;
     const frame = window.requestAnimationFrame(() => {
       const instance = terminalRef.current?.instance;
-      if (instance) refitTerminalAfterFontChange(instance);
+      if (!instance) return;
+      refitTerminalAfterFontChange(instance);
+      settleFrame = window.requestAnimationFrame(() => {
+        const element = terminalRef.current?.instance?.element;
+        if (element && shouldRestoreBottom) {
+          element.scrollTop = element.scrollHeight;
+        }
+      });
     });
-    return () => window.cancelAnimationFrame(frame);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (settleFrame !== null) window.cancelAnimationFrame(settleFrame);
+    };
   }, [fontSizePx, ready]);
 
   useEffect(
@@ -270,6 +284,12 @@ export function WtermRenderer({
     [attachment],
   );
 
+  const handleScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
+    const element = event.currentTarget;
+    followBottomRef.current =
+      element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
+  }, []);
+
   if (error) {
     return (
       <div className="wterm-renderer-diagnostic" role="alert">
@@ -296,6 +316,7 @@ export function WtermRenderer({
       onData={(data) => attachment.sendInput(new TextEncoder().encode(data))}
       onResize={handleResize}
       onMouseDown={handleMouseDown}
+      onScroll={handleScroll}
       style={terminalFontStyle}
       className="wterm-renderer"
       data-renderer="ghostty"
