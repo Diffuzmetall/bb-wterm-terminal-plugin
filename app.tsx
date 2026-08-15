@@ -3,6 +3,10 @@ import { definePluginApp, useBbContext, useRpc } from "@bb/plugin-sdk/app";
 import * as BbApp from "@bb/plugin-sdk/app";
 import type { wtermRpcContract } from "./server";
 
+const PLUGIN_ID = "wterm-terminal-preview";
+const PANEL_ACTION_ID = "terminal";
+const PANEL_TITLE = "Wterm terminal";
+
 const TerminalPanel = lazy(() => import("./terminal-panel.js"));
 type Session = {
 	id: string;
@@ -16,6 +20,50 @@ const isActive = (item: Session) => {
 	const status = item.status.toLowerCase();
 	return status === "running" || status === "starting";
 };
+
+async function callBackendRpc(
+	method: string,
+	input: unknown,
+): Promise<unknown> {
+	const response = await fetch(
+		`/api/v1/plugins/${PLUGIN_ID}/rpc/${encodeURIComponent(method)}`,
+		{
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(input ?? null),
+		},
+	);
+	const body = (await response.json().catch(() => null)) as {
+		ok?: unknown;
+		result?: unknown;
+		error?: unknown;
+	} | null;
+	if (!response.ok || body?.ok !== true) {
+		const structuredMessage =
+			typeof body?.error === "object" &&
+			body.error !== null &&
+			typeof (body.error as { message?: unknown }).message === "string"
+				? String((body.error as { message: string }).message)
+				: null;
+		throw new Error(
+			structuredMessage ?? `rpc "${method}" failed (HTTP ${response.status})`,
+		);
+	}
+	return body.result;
+}
+
+function createdTerminalId(result: unknown): string {
+	if (
+		typeof result === "object" &&
+		result !== null &&
+		"id" in result &&
+		typeof result.id === "string" &&
+		result.id.length > 0
+	) {
+		return result.id;
+	}
+	throw new Error("Plugin returned an unexpected createTerminal response.");
+}
 function Picker({
 	threadId,
 	replace,
@@ -319,10 +367,19 @@ function hasTerminalParams(value: unknown): value is TerminalParams {
 
 export default definePluginApp((app) => {
 	app.slots.threadPanelAction({
-		id: "terminal",
-		title: "Wterm terminal",
+		id: PANEL_ACTION_ID,
+		title: PANEL_TITLE,
 		icon: "Terminal",
 		layout: "flush",
+		async run({ threadId, openPanel }) {
+			const terminalId = createdTerminalId(
+				await callBackendRpc("createTerminal", { threadId }),
+			);
+			openPanel({
+				title: PANEL_TITLE,
+				params: { schemaVersion: 1, terminalId },
+			});
+		},
 		component: function TerminalAction({ threadId, params }) {
 			const { threadId: contextThreadId } = useBbContext();
 			const currentThreadId = threadId || contextThreadId || "";

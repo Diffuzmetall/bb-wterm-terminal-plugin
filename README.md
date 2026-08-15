@@ -12,7 +12,9 @@ This repository is an early public preview. The plugin ID is
 ## Features
 
 - Ghostty terminal emulation through `@wterm/ghostty` and WebAssembly.
-- Create, select, and restart thread-scoped BB terminal sessions.
+- Every **Wterm terminal** tab starts an independent thread-scoped terminal;
+  opening another tab never reuses or replaces the current session.
+- Select and restart existing thread-scoped BB terminal sessions when needed.
 - Keyboard, resize, wheel, click, and button-drag mouse input for terminal UIs.
 - Persistent font size controls from 10px to 24px.
 - Native text selection contained inside the terminal and copied on selection.
@@ -32,12 +34,12 @@ This repository is an early public preview. The plugin ID is
 Install the pinned release:
 
 ```sh
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.10' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.11' --yes
 bb plugin source wterm-terminal-preview
 ```
 
-Open a BB thread, add the **Wterm terminal** panel, then create or select a
-terminal session.
+Open a BB thread and choose **Wterm terminal** from the new-tab menu. Each
+activation creates a new terminal session and opens it in its own panel tab.
 
 To follow the latest commit on `main` instead of a release tag:
 
