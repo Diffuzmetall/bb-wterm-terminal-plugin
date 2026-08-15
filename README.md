@@ -29,7 +29,7 @@ This repository is an early public preview. The plugin ID is
 
 ## Requirements
 
-- A current BB installation with plugin SDK `^0.4.1` and host file writes.
+- BB `0.35.1` or newer with plugin SDK `^0.4.1` and host file writes.
 - Single-tab presentation requires a BB build that supports
   `experimental_claimedTerminalId`. Older hosts still work, but also show the
   same session in a native terminal tab.
@@ -41,7 +41,7 @@ This repository is an early public preview. The plugin ID is
 Install the pinned release:
 
 ```sh
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.13' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.14' --yes
 bb plugin source wterm-terminal-preview
 ```
 
@@ -55,7 +55,7 @@ installed release explicitly:
 
 ```sh
 bb plugin remove wterm-terminal-preview
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.13' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.14' --yes
 bb plugin source wterm-terminal-preview
 ```
 
@@ -141,7 +141,7 @@ git clone https://github.com/Diffuzmetall/bb-wterm-terminal-plugin.git
 cd bb-wterm-terminal-plugin
 npm ci
 npm test
-bb plugin build .
+npm run build
 ```
 
 The standalone tests protect thread scoping, upload limits and integrity, safe
@@ -156,6 +156,10 @@ dependencies and build output are intentionally not committed.
 ## License
 
 [MIT](LICENSE)
+
+This standalone plugin is derived from the Wterm integration originally
+developed in [`get-bb/bb`](https://github.com/get-bb/bb), so it preserves that
+repository's MIT copyright notice.
 
 The bundled Ghostty WASM renderer comes from
 [`@wterm/ghostty`](https://github.com/vercel-labs/wterm/tree/main/packages/%40wterm/ghostty),
