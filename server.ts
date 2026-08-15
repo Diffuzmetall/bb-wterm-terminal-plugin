@@ -51,14 +51,20 @@ export const wtermRpcContract = defineRpcContract({
 });
 type Session = z.infer<typeof session>;
 
-export function bundledNerdFontUrl(moduleUrl = import.meta.url): URL {
+function bundledAssetUrl(fileName: string, moduleUrl: string): URL {
 	const builtModule = new URL(".", moduleUrl).pathname.endsWith("/dist/");
 	return new URL(
-		builtModule
-			? "../SymbolsNerdFontMono-Regular.woff2"
-			: "./SymbolsNerdFontMono-Regular.woff2",
+		`${builtModule ? "../" : "./"}${fileName}`,
 		moduleUrl,
 	);
+}
+
+export function bundledWasmUrl(moduleUrl = import.meta.url): URL {
+	return bundledAssetUrl("ghostty-vt.wasm", moduleUrl);
+}
+
+export function bundledNerdFontUrl(moduleUrl = import.meta.url): URL {
+	return bundledAssetUrl("SymbolsNerdFontMono-Regular.woff2", moduleUrl);
 }
 
 type PluginHttpContext = Parameters<
@@ -264,7 +270,7 @@ export default function plugin(bb: BbPluginApi) {
 		WASM_PATH,
 		async () =>
 			new Response(
-				await readFile(new URL("../ghostty-vt.wasm", import.meta.url)),
+				await readFile(bundledWasmUrl()),
 				{ headers: { "content-type": "application/wasm" } },
 			),
 		{ auth: "token" },

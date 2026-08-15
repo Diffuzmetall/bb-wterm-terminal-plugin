@@ -1,5 +1,7 @@
 # Wterm Terminal Preview for BB
 
+[![CI](https://github.com/Diffuzmetall/bb-wterm-terminal-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/Diffuzmetall/bb-wterm-terminal-plugin/actions/workflows/ci.yml)
+
 A Ghostty-backed terminal panel for [BB](https://github.com/get-bb/bb). It
 attaches to a terminal session owned by the current BB thread, keeps the stock
 BB terminal untouched, and adds file transfer and terminal-specific font
@@ -138,8 +140,14 @@ or otherwise trusted release policy for production deployments.
 git clone https://github.com/Diffuzmetall/bb-wterm-terminal-plugin.git
 cd bb-wterm-terminal-plugin
 npm ci
+npm test
 bb plugin build .
 ```
+
+The standalone tests protect thread scoping, upload limits and integrity, safe
+host paths, terminal replay ordering, queued input and resize, and detach
+behavior. They run against this repository's sources without importing the BB
+workspace.
 
 The build produces the frontend and server bundles in `dist/` and copies
 `ghostty-vt.wasm` and the bundled Nerd Font from the repository. Generated
