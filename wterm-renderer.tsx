@@ -1,10 +1,10 @@
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import { GhosttyCore } from "@wterm/ghostty";
 import { Terminal, type TerminalHandle } from "@wterm/react";
@@ -159,6 +159,7 @@ export function WtermRenderer({
   const [core, setCore] = useState<GhosttyCore | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [ready, setReady] = useState(false);
+  const clearSelectionBoundaryRef = useRef<(() => void) | null>(null);
   const terminalFontStyle: TerminalFontStyle = {
     "--term-font-size": `${fontSizePx}px`,
     "--term-row-height": `${Math.ceil(fontSizePx * 1.2)}px`,
@@ -189,10 +190,75 @@ export function WtermRenderer({
     );
   }, [attachment, ready]);
 
-  useLayoutEffect(() => {
-    const instance = terminalRef.current?.instance;
-    if (ready && instance) refitTerminalAfterFontChange(instance);
+  useEffect(() => {
+    if (!ready) return;
+    const frame = window.requestAnimationFrame(() => {
+      const instance = terminalRef.current?.instance;
+      if (instance) refitTerminalAfterFontChange(instance);
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [fontSizePx, ready]);
+
+  useEffect(
+    () => () => {
+      clearSelectionBoundaryRef.current?.();
+    },
+    [],
+  );
+
+  const handleMouseDown = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      // WTerm prevents this event when a TUI owns the mouse. Shift-drag and
+      // ordinary shell selection remain native and reach this boundary.
+      if (event.button !== 0 || event.defaultPrevented) {
+        return;
+      }
+
+      clearSelectionBoundaryRef.current?.();
+      const selectionRoot = event.currentTarget;
+      document.documentElement.dataset.wtermNativeSelection = "active";
+      selectionRoot.dataset.wtermSelectionActive = "true";
+
+      const clearBoundary = () => {
+        window.removeEventListener("mouseup", finishSelection);
+        window.removeEventListener("blur", clearBoundary);
+        if (clearSelectionBoundaryRef.current === clearBoundary) {
+          clearSelectionBoundaryRef.current = null;
+          delete document.documentElement.dataset.wtermNativeSelection;
+          delete selectionRoot.dataset.wtermSelectionActive;
+        }
+      };
+      const finishSelection = () => {
+        clearBoundary();
+        const terminal = terminalRef.current?.instance?.element;
+        const selection = window.getSelection();
+        if (
+          !terminal ||
+          !selection ||
+          selection.isCollapsed ||
+          selection.rangeCount === 0
+        ) {
+          return;
+        }
+        const range = selection.getRangeAt(0);
+        if (
+          !terminal.contains(range.startContainer) ||
+          !terminal.contains(range.endContainer)
+        ) {
+          return;
+        }
+        const text = selection.toString();
+        if (text.length > 0 && navigator.clipboard?.writeText) {
+          void navigator.clipboard.writeText(text).catch(() => undefined);
+        }
+      };
+
+      clearSelectionBoundaryRef.current = clearBoundary;
+      window.addEventListener("mouseup", finishSelection, { once: true });
+      window.addEventListener("blur", clearBoundary, { once: true });
+    },
+    [],
+  );
 
   const handleResize = useCallback(
     (cols: number, rows: number) => {
@@ -229,6 +295,7 @@ export function WtermRenderer({
       onError={setError}
       onData={(data) => attachment.sendInput(new TextEncoder().encode(data))}
       onResize={handleResize}
+      onMouseDown={handleMouseDown}
       style={terminalFontStyle}
       className="wterm-renderer"
       data-renderer="ghostty"

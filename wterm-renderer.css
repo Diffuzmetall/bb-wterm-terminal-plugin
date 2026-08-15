@@ -8,6 +8,17 @@
   color: var(--ink);
 }
 
+html[data-wterm-native-selection="active"] body * {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
+html[data-wterm-native-selection="active"] [data-wterm-selection-active],
+html[data-wterm-native-selection="active"] [data-wterm-selection-active] * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
 .wterm-renderer-panel {
   width: 100%;
   height: 100%;

@@ -1,46 +1,118 @@
 # Wterm Terminal Preview for BB
 
-Private standalone build of the current Wterm terminal work from BB commit
-`2dcf5960c` (V1 terminal attachment, V2 reconnect, V3 host file upload).
-Version `0.3.2` serves Ghostty WASM through the authenticated plugin route and
-falls back to BB's legacy terminal WebSocket when the newer attachment hooks
-are unavailable.
+A Ghostty-backed terminal panel for [BB](https://github.com/get-bb/bb). It
+attaches to a terminal session owned by the current BB thread, keeps the stock
+BB terminal untouched, and adds file transfer and terminal-specific font
+controls.
+
+This repository is an early public preview. The plugin ID is
+`wterm-terminal-preview`, so it can coexist with BB's bundled
+`wterm-terminal` while the integration is evaluated.
+
+## Features
+
+- Ghostty terminal emulation through `@wterm/ghostty` and WebAssembly.
+- Create, select, and restart thread-scoped BB terminal sessions.
+- Keyboard, resize, wheel, click, and button-drag mouse input for terminal UIs.
+- Persistent font size controls from 10px to 24px.
+- Native text selection contained inside the terminal and copied on selection.
+- File upload by button or drag-and-drop, plus image upload from the clipboard.
+- Files are written on the terminal host and their quoted path is inserted at
+  the prompt using bracketed paste.
+- Compatibility with BB hosts that expose the legacy terminal WebSocket.
 
 ## Requirements
 
-- A BB build with plugin SDK `^0.4.1` and host file writes. Newer attachment
-  hooks are used when present; older hosts use the legacy terminal socket.
-- `git`, `npm`, `gh`, and `bb` on `PATH`.
-- GitHub access to `Diffuzmetall/bb-wterm-terminal-plugin`.
+- A current BB installation with plugin SDK `^0.4.1` and host file writes.
+- `git`, `npm`, and `bb` available on `PATH`.
+- Network access to GitHub and the npm registry during installation.
 
-## Install the pinned version
+## Install
+
+Install the pinned release:
 
 ```sh
-gh auth status
-gh auth setup-git
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.2' --yes
-bb plugin list
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.9' --yes
+bb plugin source wterm-terminal-preview
 ```
 
-BB clones the private repository through Git's HTTPS credential helper, installs
-runtime dependencies with lifecycle scripts disabled, and builds the plugin.
+Open a BB thread, add the **Wterm terminal** panel, then create or select a
+terminal session.
 
-## Track `main` instead
-
-Use this only when you deliberately want later commits:
+To follow the latest commit on `main` instead of a release tag:
 
 ```sh
 bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@main' --yes
-bb plugin update wterm-terminal-preview
+bb plugin update wterm-terminal-preview --yes
 ```
 
-## Control or remove
+Release tags are recommended because a pinned source is reproducible. Updating
+a pinned tag requires installing the newer tag explicitly.
+
+## Terminal controls
+
+- Use the `-` and `+` toolbar buttons to change the terminal font size. The
+  setting is remembered in the browser.
+- In a normal shell, drag to select text.
+- When a TUI such as Herdr has enabled mouse tracking, click and drag are sent
+  to the TUI. Hold `Shift` while dragging to use browser-native selection.
+- A completed native selection is copied to the clipboard when browser
+  permissions allow it.
+
+## File and image transfer
+
+Use **Upload file**, drop a file over the panel, or paste an image. The plugin
+sends the bytes through an authenticated BB plugin route and `bb.sdk.files` to
+the host that owns the selected terminal. It does not implement a second SCP or
+SSH client.
+
+Uploads are stored under `<terminal cwd>/.bb-wterm-uploads/` with randomized
+names and mode `0600`. The plugin verifies the returned size and SHA-256 before
+inserting the path. Images are limited to 10 MiB and other files to 25 MiB.
+
+## Manage the plugin
 
 ```sh
+bb plugin list
+bb plugin reload wterm-terminal-preview
 bb plugin disable wterm-terminal-preview
 bb plugin enable wterm-terminal-preview
 bb plugin remove wterm-terminal-preview
 ```
 
-The plugin ID is `wterm-terminal-preview`, so it can coexist with the bundled
-official `wterm-terminal` during development.
+If the BB host daemon restarts and the selected terminal is no longer
+available, reopen the Wterm panel and select or restart a terminal session.
+
+## Security model
+
+- The WASM and upload endpoints require BB's per-plugin HTTP token.
+- An upload is accepted only when the terminal belongs to the requested thread.
+- File writes use the terminal's host and initial working directory as the BB
+  file boundary.
+- Upload names are randomized; existing files are not overwritten.
+- The repository contains no credentials and the plugin does not persist BB
+  tokens.
+
+Before installing code from `main`, review the current commit. Prefer a signed
+or otherwise trusted release policy for production deployments.
+
+## Development
+
+```sh
+git clone https://github.com/Diffuzmetall/bb-wterm-terminal-plugin.git
+cd bb-wterm-terminal-plugin
+npm ci
+bb plugin build .
+```
+
+The build produces the frontend and server bundles in `dist/` and copies
+`ghostty-vt.wasm` as a declared plugin asset. Generated dependencies and build
+output are intentionally not committed.
+
+## License
+
+[MIT](LICENSE)
+
+The bundled Ghostty WASM renderer comes from
+[`@wterm/ghostty`](https://github.com/vercel-labs/wterm/tree/main/packages/%40wterm/ghostty),
+which is distributed under the Apache-2.0 license.
