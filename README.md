@@ -26,6 +26,9 @@ This repository is an early public preview. The plugin ID is
 ## Requirements
 
 - A current BB installation with plugin SDK `^0.4.1` and host file writes.
+- Single-tab presentation requires a BB build that supports
+  `experimental_claimedTerminalId`. Older hosts still work, but also show the
+  same session in a native terminal tab.
 - `git`, `npm`, and `bb` available on `PATH`.
 - Network access to GitHub and the npm registry during installation.
 
@@ -34,7 +37,7 @@ This repository is an early public preview. The plugin ID is
 Install the pinned release:
 
 ```sh
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.11' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.12' --yes
 bb plugin source wterm-terminal-preview
 ```
 

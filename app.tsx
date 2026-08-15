@@ -298,6 +298,7 @@ type ReplaceCurrentPluginTabHook = () => (input: {
 	actionId: string;
 	title: string;
 	params: never;
+	experimental_claimedTerminalId?: string | null;
 }) => void;
 
 function HostTerminalAction({
@@ -319,6 +320,9 @@ function HostTerminalAction({
 					actionId: "terminal",
 					title: "Wterm terminal",
 					params: nextParams as never,
+					experimental_claimedTerminalId: hasTerminalParams(nextParams)
+						? nextParams.terminalId
+						: null,
 				})
 			}
 		/>
@@ -375,10 +379,12 @@ export default definePluginApp((app) => {
 			const terminalId = createdTerminalId(
 				await callBackendRpc("createTerminal", { threadId }),
 			);
-			openPanel({
+			const panelOptions = {
 				title: PANEL_TITLE,
 				params: { schemaVersion: 1, terminalId },
-			});
+				experimental_claimedTerminalId: terminalId,
+			};
+			openPanel(panelOptions);
 		},
 		component: function TerminalAction({ threadId, params }) {
 			const { threadId: contextThreadId } = useBbContext();
