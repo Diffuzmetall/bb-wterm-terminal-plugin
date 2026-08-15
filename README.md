@@ -46,15 +46,33 @@ bb plugin source wterm-terminal-preview
 Open a BB thread and choose **Wterm terminal** from the new-tab menu. Each
 activation creates a new terminal session and opens it in its own panel tab.
 
-To follow the latest commit on `main` instead of a release tag:
+## Update
+
+Pinned release tags do not advance through `bb plugin update`. Replace an
+installed release explicitly:
+
+```sh
+bb plugin remove wterm-terminal-preview
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.13' --yes
+bb plugin source wterm-terminal-preview
+```
+
+To install from the latest commit on `main` instead of a release tag:
 
 ```sh
 bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@main' --yes
+bb plugin source wterm-terminal-preview
+```
+
+Once the plugin is installed from `main`, update it with:
+
+```sh
 bb plugin update wterm-terminal-preview --yes
 ```
 
 Release tags are recommended because a pinned source is reproducible. Updating
-a pinned tag requires installing the newer tag explicitly.
+a pinned tag, or switching between a tag and `main`, requires the
+remove-and-install sequence above.
 
 ## Terminal controls
 
