@@ -333,8 +333,7 @@ function LegacyTerminalAction({
 	params: unknown;
 }) {
 	const storageKey = `bb.wterm-terminal-preview.${threadId}`;
-	const [currentParams, setCurrentParams] = useState<unknown>(() => {
-		if (hasTerminalParams(params)) return params;
+	const [fallbackParams, setFallbackParams] = useState<unknown>(() => {
 		try {
 			const saved = window.localStorage.getItem(storageKey);
 			if (saved) {
@@ -344,8 +343,9 @@ function LegacyTerminalAction({
 		} catch {}
 		return null;
 	});
+	const currentParams = hasTerminalParams(params) ? params : fallbackParams;
 	const replace = (nextParams: unknown) => {
-		setCurrentParams(nextParams);
+		setFallbackParams(nextParams);
 		try {
 			window.localStorage.setItem(storageKey, JSON.stringify(nextParams));
 		} catch {}
