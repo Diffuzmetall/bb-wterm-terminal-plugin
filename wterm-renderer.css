@@ -3,7 +3,10 @@
   width: 100%;
   height: 100%;
   min-height: 0;
+  box-sizing: border-box;
   overflow: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   background: var(--canvas);
   color: var(--ink);
 }
@@ -32,6 +35,7 @@ html[data-wterm-native-selection="active"] [data-wterm-selection-active] * {
   width: 100%;
   height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
 
 .wterm-renderer-diagnostic {
@@ -66,4 +70,5 @@ html[data-wterm-native-selection="active"] [data-wterm-selection-active] * {
 .wterm-upload-terminal {
   min-height: 0;
   flex: 1;
+  overflow: hidden;
 }
