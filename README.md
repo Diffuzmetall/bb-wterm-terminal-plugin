@@ -41,7 +41,7 @@ This repository is an early public preview. The plugin ID is
 Install the pinned release:
 
 ```sh
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.14' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.15' --yes
 bb plugin source wterm-terminal-preview
 ```
 
@@ -55,7 +55,7 @@ installed release explicitly:
 
 ```sh
 bb plugin remove wterm-terminal-preview
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.14' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.15' --yes
 bb plugin source wterm-terminal-preview
 ```
 
