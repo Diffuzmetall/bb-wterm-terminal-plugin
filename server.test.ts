@@ -80,7 +80,13 @@ function createPluginHarness() {
   const bb = {
     http: { route },
     rpc: { register },
-    sdk: { files: { write }, terminals: { list } },
+    storage: {
+      kv: {
+        get: vi.fn().mockResolvedValue(undefined),
+        set: vi.fn().mockResolvedValue(undefined),
+      },
+    },
+    sdk: { files: { write }, terminals: { get: vi.fn(), list } },
   } as never;
   plugin(bb);
   const handlers = new Map(
@@ -176,7 +182,7 @@ describe("Wterm server boundaries", () => {
     expect(createHash("sha256").update(upstream).digest("hex")).toBe(expected);
   });
 
-  it("passes exact thread scope to lifecycle calls and rejects cross-thread restart", async () => {
+  it("creates hidden environment terminals and rejects cross-thread restart", async () => {
     const register = vi.fn();
     const list = vi.fn().mockResolvedValue({
       sessions: [
@@ -197,10 +203,18 @@ describe("Wterm server boundaries", () => {
       updatedAt: 11,
     });
     const restart = vi.fn();
+    const kvGet = vi.fn().mockResolvedValue(undefined);
+    const kvSet = vi.fn().mockResolvedValue(undefined);
     const bb = {
       http: { route: vi.fn() },
       rpc: { register },
-      sdk: { terminals: { list, create, restart } },
+      storage: { kv: { get: kvGet, set: kvSet } },
+      sdk: {
+        threads: {
+          get: vi.fn().mockResolvedValue({ environmentId: "environment-1" }),
+        },
+        terminals: { get: vi.fn(), list, create, restart },
+      },
     } as never;
     plugin(bb);
     const handlers = register.mock.calls[0]?.[1];
@@ -213,11 +227,15 @@ describe("Wterm server boundaries", () => {
       scope: { kind: "thread", threadId: "thread-1" },
     });
     expect(create).toHaveBeenCalledWith({
-      scope: { kind: "thread", threadId: "thread-1" },
+      scope: { kind: "environment", environmentId: "environment-1" },
       cols: 80,
       rows: 24,
       start: { mode: "shell" },
+      title: "Wterm terminal",
     });
+    expect(kvSet).toHaveBeenCalledWith("thread-terminals:thread-1", [
+      "term-2",
+    ]);
 
     list.mockClear();
     list.mockImplementation(({ scope: requestedScope }) =>
@@ -261,6 +279,55 @@ describe("Wterm server boundaries", () => {
       }),
     ).resolves.toMatchObject({ id: "term-1" });
     expect(restart).toHaveBeenCalledWith({ terminalId: "term-1" });
+  });
+
+  it("lists and restarts terminals linked from the thread to its environment", async () => {
+    const register = vi.fn();
+    const linked = {
+      id: "term-environment",
+      title: "Wterm terminal",
+      initialCwd: "/workspace",
+      status: "running",
+      updatedAt: 20,
+      lastUserInputAt: null,
+    };
+    const kvGet = vi.fn().mockResolvedValue([linked.id]);
+    const kvSet = vi.fn().mockResolvedValue(undefined);
+    const get = vi.fn().mockResolvedValue(linked);
+    const restart = vi.fn().mockResolvedValue({
+      ...linked,
+      id: "term-replacement",
+      updatedAt: 21,
+    });
+    const bb = {
+      http: { route: vi.fn() },
+      rpc: { register },
+      storage: { kv: { get: kvGet, set: kvSet } },
+      sdk: {
+        terminals: {
+          get,
+          list: vi.fn().mockResolvedValue({ sessions: [] }),
+          restart,
+        },
+      },
+    } as never;
+    plugin(bb);
+    const handlers = register.mock.calls[0]?.[1];
+
+    await expect(
+      handlers.listSessions({ threadId: "thread-1" }),
+    ).resolves.toMatchObject([{ id: linked.id }]);
+    await expect(
+      handlers.restartTerminal({
+        threadId: "thread-1",
+        terminalId: linked.id,
+      }),
+    ).resolves.toMatchObject({ id: "term-replacement" });
+    expect(get).toHaveBeenCalledWith({ terminalId: linked.id });
+    expect(restart).toHaveBeenCalledWith({ terminalId: linked.id });
+    expect(kvSet).toHaveBeenCalledWith("thread-terminals:thread-1", [
+      "term-replacement",
+    ]);
   });
 
   it("writes verified bytes to a UUID path below the selected terminal cwd", async () => {

@@ -23,7 +23,11 @@ const IMAGE_EXTENSIONS = new Set([
 	"webp",
 ]);
 
-const scope = (threadId: string) => ({ kind: "thread" as const, threadId });
+const legacyScope = (threadId: string) => ({
+	kind: "thread" as const,
+	threadId,
+});
+const terminalLinksKey = (threadId: string) => `thread-terminals:${threadId}`;
 const session = z.object({
 	id: z.string(),
 	title: z.string(),
@@ -166,6 +170,55 @@ export async function readBoundedUploadBody(
 	return body;
 }
 
+async function linkedTerminalIds(
+	bb: BbPluginApi,
+	threadId: string,
+): Promise<string[]> {
+	return (await bb.storage.kv.get<string[]>(terminalLinksKey(threadId))) ?? [];
+}
+
+async function saveLinkedTerminalIds(
+	bb: BbPluginApi,
+	threadId: string,
+	terminalIds: readonly string[],
+): Promise<void> {
+	await bb.storage.kv.set(terminalLinksKey(threadId), [...new Set(terminalIds)]);
+}
+
+async function rememberLinkedTerminal(
+	bb: BbPluginApi,
+	threadId: string,
+	terminalId: string,
+): Promise<void> {
+	await saveLinkedTerminalIds(bb, threadId, [
+		...(await linkedTerminalIds(bb, threadId)),
+		terminalId,
+	]);
+}
+
+async function sessionsForThread(bb: BbPluginApi, threadId: string) {
+	const [legacy, linkedIds] = await Promise.all([
+		bb.sdk.terminals.list({ scope: legacyScope(threadId) }),
+		linkedTerminalIds(bb, threadId),
+	]);
+	const linkedResults = await Promise.allSettled(
+		linkedIds.map((terminalId) => bb.sdk.terminals.get({ terminalId })),
+	);
+	const linked = linkedResults.flatMap((result) =>
+		result.status === "fulfilled" ? [result.value] : [],
+	);
+	if (linked.length !== linkedIds.length) {
+		await saveLinkedTerminalIds(
+			bb,
+			threadId,
+			linked.map((terminal) => terminal.id),
+		);
+	}
+	return [...new Map(
+		[...legacy.sessions, ...linked].map((terminal) => [terminal.id, terminal]),
+	).values()];
+}
+
 async function handleUpload(
 	bb: BbPluginApi,
 	context: PluginHttpContext,
@@ -176,8 +229,8 @@ async function handleUpload(
 		const fileName = requiredQuery(context, "fileName");
 		const mime =
 			context.req.query("mime")?.trim() || "application/octet-stream";
-		const sessions = await bb.sdk.terminals.list({ scope: scope(threadId) });
-		const terminal = sessions.sessions.find((item) => item.id === terminalId);
+		const sessions = await sessionsForThread(bb, threadId);
+		const terminal = sessions.find((item) => item.id === terminalId);
 		if (!terminal) {
 			throw new UploadError(404, "terminal is not in the requested thread");
 		}
@@ -243,23 +296,40 @@ function mapSession(value: {
 export default function plugin(bb: BbPluginApi) {
 	bb.rpc.register(wtermRpcContract, {
 		async listSessions({ threadId }) {
-			const result = await bb.sdk.terminals.list({ scope: scope(threadId) });
-			return result.sessions.map(mapSession);
+			return (await sessionsForThread(bb, threadId)).map(mapSession);
 		},
 		async createTerminal({ threadId }) {
+			const thread = await bb.sdk.threads.get({ threadId });
+			if (!thread.environmentId) {
+				throw new Error("Thread has no terminal environment");
+			}
 			const result = await bb.sdk.terminals.create({
-				scope: scope(threadId),
+				scope: {
+					kind: "environment",
+					environmentId: thread.environmentId,
+				},
 				cols: 80,
 				rows: 24,
 				start: { mode: "shell" },
+				title: "Wterm terminal",
 			});
+			await rememberLinkedTerminal(bb, threadId, result.id);
 			return mapSession(result);
 		},
 		async restartTerminal({ threadId, terminalId }) {
-			const sessions = await bb.sdk.terminals.list({ scope: scope(threadId) });
-			if (!sessions.sessions.some((item) => item.id === terminalId))
+			const sessions = await sessionsForThread(bb, threadId);
+			if (!sessions.some((item) => item.id === terminalId))
 				throw new Error("Terminal is not in the requested thread");
-			return mapSession(await bb.sdk.terminals.restart({ terminalId }));
+			const replacement = await bb.sdk.terminals.restart({ terminalId });
+			const linkedIds = await linkedTerminalIds(bb, threadId);
+			if (linkedIds.includes(terminalId)) {
+				await saveLinkedTerminalIds(
+					bb,
+					threadId,
+					linkedIds.map((id) => (id === terminalId ? replacement.id : id)),
+				);
+			}
+			return mapSession(replacement);
 		},
 	});
 	bb.http.route("POST", UPLOAD_PATH, (context) => handleUpload(bb, context), {
