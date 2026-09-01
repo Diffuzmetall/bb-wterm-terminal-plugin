@@ -6,6 +6,7 @@ import {
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type UIEvent as ReactUIEvent,
+  type WheelEvent as ReactWheelEvent,
 } from "react";
 import { GhosttyCore } from "@wterm/ghostty";
 import { Terminal, type TerminalHandle } from "@wterm/react";
@@ -141,6 +142,34 @@ export async function loadNerdFont(
 export function hasRenderedSize(element: HTMLElement): boolean {
   const { width, height } = element.getBoundingClientRect();
   return width > 0 && height > 0;
+}
+
+type SelectionLike<NodeValue> = {
+  getRangeAt(index: number): {
+    endContainer: NodeValue;
+    startContainer: NodeValue;
+  };
+  isCollapsed: boolean;
+  rangeCount: number;
+  removeAllRanges(): void;
+};
+
+export function clearTerminalSelection<NodeValue>(
+  terminal: { contains(node: NodeValue): boolean },
+  selection: SelectionLike<NodeValue> | null,
+): boolean {
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return false;
+  }
+  const range = selection.getRangeAt(0);
+  if (
+    !terminal.contains(range.startContainer) &&
+    !terminal.contains(range.endContainer)
+  ) {
+    return false;
+  }
+  selection.removeAllRanges();
+  return true;
 }
 
 interface WtermFontMetricsBoundary {
@@ -321,6 +350,17 @@ export function WtermRenderer({
     [attachment],
   );
 
+  const handleWheelCapture = useCallback(
+    (event: ReactWheelEvent<HTMLDivElement>) => {
+      if (clearSelectionBoundaryRef.current) return;
+      clearTerminalSelection<Node | null>(
+        terminalRef.current?.instance?.element ?? event.currentTarget,
+        window.getSelection(),
+      );
+    },
+    [],
+  );
+
   const handleScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     const element = event.currentTarget;
     followBottomRef.current =
@@ -353,6 +393,7 @@ export function WtermRenderer({
       onData={(data) => attachment.sendInput(new TextEncoder().encode(data))}
       onResize={handleResize}
       onMouseDown={handleMouseDown}
+      onWheelCapture={handleWheelCapture}
       onScroll={handleScroll}
       style={terminalFontStyle}
       className="wterm-renderer"
