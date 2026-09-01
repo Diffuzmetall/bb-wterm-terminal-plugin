@@ -35,6 +35,8 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
   private attachedNextSeq: number | null = null;
   private detached = false;
   private lastDeliveredSeq = -1;
+  private reconnectAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly listeners = new Set<
     (chunk: TerminalAttachmentChunk) => void
   >();
@@ -52,6 +54,11 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
 
   connect(): void {
     if (this.detached || this.socket !== null) return;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.attachedNextSeq = null;
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const endpoint = `${protocol}//${window.location.host}/ws/terminals/${encodeURIComponent(this.terminalId)}`;
     const socket = new WebSocket(endpoint);
@@ -60,13 +67,14 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
       if (this.socket === socket) this.handleMessage(event.data);
     };
     socket.onopen = () => {
-      if (this.socket === socket) this.flushPendingSends(socket);
+      if (this.socket !== socket) return;
+      this.reconnectAttempts = 0;
+      this.flushPendingSends(socket);
     };
     socket.onclose = () => {
       if (this.socket !== socket) return;
       this.socket = null;
-      this.pendingInputs.length = 0;
-      this.pendingResize = null;
+      this.scheduleReconnect();
     };
   }
 
@@ -99,6 +107,10 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
       socket.onmessage = null;
       socket.onopen = null;
       socket.close();
+    }
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
     this.listeners.clear();
     this.pendingBeforeAttach.clear();
@@ -172,7 +184,12 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
   }
 
   private sendInputMessage(message: string): boolean {
-    if (this.detached || this.socket === null) return false;
+    if (this.detached) return false;
+    if (this.socket === null) {
+      this.pendingInputs.push(message);
+      this.connect();
+      return true;
+    }
     if (this.socket.readyState === WebSocket.CONNECTING) {
       this.pendingInputs.push(message);
       return true;
@@ -183,7 +200,12 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
   }
 
   private sendResizeMessage(message: string): boolean {
-    if (this.detached || this.socket === null) return false;
+    if (this.detached) return false;
+    if (this.socket === null) {
+      this.pendingResize = message;
+      this.connect();
+      return true;
+    }
     if (this.socket.readyState === WebSocket.CONNECTING) {
       this.pendingResize = message;
       return true;
@@ -198,6 +220,16 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
     this.pendingResize = null;
     for (const message of this.pendingInputs) socket.send(message);
     this.pendingInputs.length = 0;
+  }
+
+  private scheduleReconnect(): void {
+    if (this.detached || this.reconnectTimer !== null) return;
+    const delay = Math.min(2_000, 100 * 2 ** this.reconnectAttempts);
+    this.reconnectAttempts += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay);
   }
 }
 

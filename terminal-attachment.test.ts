@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   decodeBase64,
   LegacyTerminalAttachment,
@@ -24,6 +24,11 @@ class FakeWebSocket {
   close(): void {
     this.closeCount += 1;
     this.readyState = FakeWebSocket.CLOSED;
+  }
+
+  disconnect(): void {
+    this.readyState = FakeWebSocket.CLOSED;
+    this.onclose?.(new Event("close") as CloseEvent);
   }
 
   open(): void {
@@ -53,6 +58,10 @@ beforeEach(() => {
     location: { host: "bb.test", protocol: "https:" },
   });
   vi.stubGlobal("WebSocket", FakeWebSocket);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("decodeBase64", () => {
@@ -135,6 +144,40 @@ describe("LegacyTerminalAttachment", () => {
       { type: "input", dataBase64: "YQ==" },
       { type: "input", dataBase64: "w6k=" },
     ]);
+  });
+
+  it("reconnects automatically after the socket closes", () => {
+    vi.useFakeTimers();
+    const attachment = new LegacyTerminalAttachment("terminal-1");
+    attachment.connect();
+    const first = FakeWebSocket.instances[0]!;
+    first.open();
+
+    first.disconnect();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    vi.advanceTimersByTime(100);
+
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    attachment.detach();
+  });
+
+  it("reconnects immediately and preserves input typed while disconnected", () => {
+    vi.useFakeTimers();
+    const attachment = new LegacyTerminalAttachment("terminal-1");
+    attachment.connect();
+    const first = FakeWebSocket.instances[0]!;
+    first.open();
+    first.disconnect();
+
+    expect(attachment.sendInput(new TextEncoder().encode("resume"))).toBe(true);
+    const second = FakeWebSocket.instances[1]!;
+    expect(second.sent).toEqual([]);
+    second.open();
+
+    expect(second.sent.map((message) => JSON.parse(message))).toEqual([
+      { type: "input", dataBase64: "cmVzdW1l" },
+    ]);
+    attachment.detach();
   });
 
   it("detaches without sending terminal close and rejects future sends", () => {
