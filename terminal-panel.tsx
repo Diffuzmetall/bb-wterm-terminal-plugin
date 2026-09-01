@@ -13,7 +13,12 @@ import {
   useLegacyTerminalAttachment,
   type TerminalAttachment,
 } from "./terminal-attachment.js";
-import { TerminalRenderer } from "./wterm-renderer.js";
+import {
+  preloadTerminalAssets,
+  TerminalRenderer,
+} from "./wterm-renderer.js";
+
+export const preloadTerminalPanel = preloadTerminalAssets;
 
 const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024;
 const MAX_FILE_UPLOAD_BYTES = 25 * 1024 * 1024;

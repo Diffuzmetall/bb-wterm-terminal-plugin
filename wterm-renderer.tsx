@@ -12,6 +12,7 @@ import { GhosttyCore } from "@wterm/ghostty";
 import { Terminal, type TerminalHandle } from "@wterm/react";
 import { z } from "zod";
 import type { TerminalAttachment } from "./terminal-attachment.js";
+import { createRetryablePromiseCache } from "./retryable-cache.js";
 // @ts-expect-error CSS side effects are resolved by the plugin bundler.
 import "@wterm/react/css";
 // @ts-expect-error CSS side effects are resolved by the plugin bundler.
@@ -67,7 +68,7 @@ export function supportAnyEventMouseMode(core: GhosttyCore): GhosttyCore {
   return core;
 }
 
-async function pluginToken(): Promise<string> {
+const pluginToken = createRetryablePromiseCache(async () => {
   const response = await fetch(`/api/v1/plugins/${PLUGIN_ID}/token`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -77,10 +78,23 @@ async function pluginToken(): Promise<string> {
   const json: unknown = await response.json().catch(() => null);
   const parsed = z.object({ token: z.string() }).safeParse(json);
   if (!response.ok || !parsed.success) {
-    throw new Error(`WASM token request failed (HTTP ${response.status})`);
+    throw new Error(`asset token request failed (HTTP ${response.status})`);
   }
   return parsed.data.token;
-}
+});
+
+const ghosttyWasmObjectUrl = createRetryablePromiseCache(async () => {
+  const response = await fetch(GHOSTTY_WASM_URL, {
+    headers: { "x-bb-plugin-token": await pluginToken() },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) {
+    throw new Error(`WASM request failed (HTTP ${response.status})`);
+  }
+  return URL.createObjectURL(
+    new Blob([await response.arrayBuffer()], { type: "application/wasm" }),
+  );
+});
 
 export async function loadGhosttyCore(
   wasmUrl = GHOSTTY_WASM_URL,
@@ -90,23 +104,13 @@ export async function loadGhosttyCore(
       await GhosttyCore.load({ wasmPath: wasmUrl }),
     );
   }
-  const response = await fetch(wasmUrl, {
-    headers: { "x-bb-plugin-token": await pluginToken() },
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!response.ok) {
-    throw new Error(`WASM request failed (HTTP ${response.status})`);
-  }
-  const objectUrl = URL.createObjectURL(
-    new Blob([await response.arrayBuffer()], { type: "application/wasm" }),
+  return supportAnyEventMouseMode(
+    await GhosttyCore.load({ wasmPath: await ghosttyWasmObjectUrl() }),
   );
-  try {
-    return supportAnyEventMouseMode(
-      await GhosttyCore.load({ wasmPath: objectUrl }),
-    );
-  } finally {
-    URL.revokeObjectURL(objectUrl);
-  }
+}
+
+export async function preloadTerminalAssets(): Promise<void> {
+  await Promise.all([ghosttyWasmObjectUrl(), loadNerdFont()]);
 }
 
 export async function loadNerdFont(

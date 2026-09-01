@@ -7,7 +7,8 @@ const PLUGIN_ID = "wterm-terminal-preview";
 const PANEL_ACTION_ID = "terminal";
 const PANEL_TITLE = "Wterm terminal";
 
-const TerminalPanel = lazy(() => import("./terminal-panel.js"));
+const loadTerminalPanel = () => import("./terminal-panel.js");
+const TerminalPanel = lazy(loadTerminalPanel);
 type Session = {
 	id: string;
 	title: string;
@@ -376,6 +377,9 @@ export default definePluginApp((app) => {
 		icon: "Terminal",
 		layout: "flush",
 		async run({ threadId, openPanel }) {
+			void loadTerminalPanel()
+				.then(({ preloadTerminalPanel }) => preloadTerminalPanel())
+				.catch(() => {});
 			const terminalId = createdTerminalId(
 				await callBackendRpc("createTerminal", { threadId }),
 			);
