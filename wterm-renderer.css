@@ -8,6 +8,15 @@
   color: var(--ink);
 }
 
+/* WTerm promotes the final cell's background to the entire DOM row. That
+ * optimization leaks a clipped TUI cell's color across the panel and leaves
+ * full-width bars in inline terminal history after the TUI exits. Every cell
+ * is already painted by its span, so keep the row container transparent. */
+.wterm-renderer .term-row {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
 html[data-wterm-native-selection="active"] body * {
   -webkit-user-select: none !important;
   user-select: none !important;
