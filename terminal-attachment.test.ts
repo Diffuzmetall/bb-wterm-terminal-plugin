@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { LegacyTerminalAttachment } from "./terminal-attachment";
+import {
+  decodeBase64,
+  LegacyTerminalAttachment,
+} from "./terminal-attachment";
 
 class FakeWebSocket {
   static readonly CONNECTING = 0;
@@ -50,6 +53,14 @@ beforeEach(() => {
     location: { host: "bb.test", protocol: "https:" },
   });
   vi.stubGlobal("WebSocket", FakeWebSocket);
+});
+
+describe("decodeBase64", () => {
+  it("decodes binary bytes without changing values", () => {
+    expect(decodeBase64("AAH+/w==")).toEqual(
+      new Uint8Array([0, 1, 254, 255]),
+    );
+  });
 });
 
 describe("LegacyTerminalAttachment", () => {
