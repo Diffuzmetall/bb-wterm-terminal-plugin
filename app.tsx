@@ -2,10 +2,16 @@ import { lazy, useEffect, useRef, useState } from "react";
 import { definePluginApp, useBbContext, useRpc } from "@bb/plugin-sdk/app";
 import * as BbApp from "@bb/plugin-sdk/app";
 import type { wtermRpcContract } from "./server";
+import {
+	reusableTerminalId,
+	type TerminalOpenCandidate,
+} from "./terminal-open-policy.js";
 
 const PLUGIN_ID = "wterm-terminal-preview";
 const PANEL_ACTION_ID = "terminal";
 const PANEL_TITLE = "Wterm terminal";
+const LAST_TERMINAL_STORAGE_PREFIX = "bb.wterm-terminal-preview";
+const openWtermTabsByThread = new Map<string, number>();
 
 const loadTerminalPanel = () => import("./terminal-panel.js");
 const TerminalPanel = lazy(loadTerminalPanel);
@@ -21,6 +27,65 @@ const isActive = (item: Session) => {
 	const status = item.status.toLowerCase();
 	return status === "running" || status === "starting";
 };
+
+function terminalStorageKey(threadId: string): string {
+	return `${LAST_TERMINAL_STORAGE_PREFIX}.${threadId}`;
+}
+
+function readLastTerminalId(threadId: string): string | null {
+	try {
+		const saved = window.localStorage.getItem(terminalStorageKey(threadId));
+		if (!saved) return null;
+		const parsed: unknown = JSON.parse(saved);
+		return hasTerminalParams(parsed) ? parsed.terminalId : null;
+	} catch {
+		return null;
+	}
+}
+
+function writeLastTerminalId(threadId: string, terminalId: string): void {
+	try {
+		window.localStorage.setItem(
+			terminalStorageKey(threadId),
+			JSON.stringify({ schemaVersion: 1, terminalId }),
+		);
+	} catch {
+		// Reopening still works for the current tab when storage is unavailable.
+	}
+}
+
+function terminalCandidates(value: unknown): TerminalOpenCandidate[] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((item) => {
+		if (
+			typeof item !== "object" ||
+			item === null ||
+			!("id" in item) ||
+			typeof item.id !== "string" ||
+			!("status" in item) ||
+			typeof item.status !== "string"
+		) {
+			return [];
+		}
+		return [{ id: item.id, status: item.status }];
+	});
+}
+
+function useTrackOpenWtermTab(threadId: string, params: unknown): void {
+	const terminalId = hasTerminalParams(params) ? params.terminalId : null;
+	useEffect(() => {
+		openWtermTabsByThread.set(
+			threadId,
+			(openWtermTabsByThread.get(threadId) ?? 0) + 1,
+		);
+		if (terminalId) writeLastTerminalId(threadId, terminalId);
+		return () => {
+			const remaining = (openWtermTabsByThread.get(threadId) ?? 1) - 1;
+			if (remaining > 0) openWtermTabsByThread.set(threadId, remaining);
+			else openWtermTabsByThread.delete(threadId);
+		};
+	}, [terminalId, threadId]);
+}
 
 async function callBackendRpc(
 	method: string,
@@ -337,7 +402,7 @@ function LegacyTerminalAction({
 	threadId: string;
 	params: unknown;
 }) {
-	const storageKey = `bb.wterm-terminal-preview.${threadId}`;
+	const storageKey = terminalStorageKey(threadId);
 	const [fallbackParams, setFallbackParams] = useState<unknown>(() => {
 		try {
 			const saved = window.localStorage.getItem(storageKey);
@@ -380,9 +445,25 @@ export default definePluginApp((app) => {
 			void loadTerminalPanel()
 				.then(({ preloadTerminalPanel }) => preloadTerminalPanel())
 				.catch(() => {});
-			const terminalId = createdTerminalId(
-				await callBackendRpc("createTerminal", { threadId }),
-			);
+			const openTabCount = openWtermTabsByThread.get(threadId) ?? 0;
+			const lastTerminalId = readLastTerminalId(threadId);
+			let terminalId: string | null = null;
+			if (openTabCount === 0 && lastTerminalId !== null) {
+				const sessions = await callBackendRpc("listSessions", { threadId }).catch(
+					() => [],
+				);
+				terminalId = reusableTerminalId({
+					lastTerminalId,
+					openTabCount,
+					sessions: terminalCandidates(sessions),
+				});
+			}
+			if (terminalId === null) {
+				terminalId = createdTerminalId(
+					await callBackendRpc("createTerminal", { threadId }),
+				);
+			}
+			writeLastTerminalId(threadId, terminalId);
 			const panelOptions = {
 				title: PANEL_TITLE,
 				params: { schemaVersion: 1, terminalId },
@@ -393,6 +474,7 @@ export default definePluginApp((app) => {
 		component: function TerminalAction({ threadId, params }) {
 			const { threadId: contextThreadId } = useBbContext();
 			const currentThreadId = threadId || contextThreadId || "";
+			useTrackOpenWtermTab(currentThreadId, params);
 			const useReplaceCurrent = Reflect.get(
 				BbApp,
 				"experimental_useReplaceCurrentPluginTab",
