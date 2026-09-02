@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { clearTerminalSelection } from "./wterm-renderer";
+import {
+  clearTerminalSelection,
+  isUsableTerminalSize,
+  shouldApplyTerminalResize,
+} from "./wterm-renderer";
 
 function selectionFixture({
   collapsed = false,
@@ -51,5 +55,20 @@ describe("clearTerminalSelection", () => {
       clearTerminalSelection(fixture.terminal, fixture.selection),
     ).toBe(false);
     expect(fixture.removeAllRanges).not.toHaveBeenCalled();
+  });
+});
+
+describe("collapsed terminal sizes", () => {
+  it("rejects the 1×1 size hidden tabs collapse into", () => {
+    expect(isUsableTerminalSize(1, 1)).toBe(false);
+    expect(isUsableTerminalSize(0, 24)).toBe(false);
+    expect(isUsableTerminalSize(80, 1)).toBe(false);
+    expect(isUsableTerminalSize(80, 24)).toBe(true);
+  });
+
+  it("does not apply a collapsed resize even when the element reports a box", () => {
+    expect(shouldApplyTerminalResize(1, 1, true)).toBe(false);
+    expect(shouldApplyTerminalResize(80, 24, false)).toBe(false);
+    expect(shouldApplyTerminalResize(80, 24, true)).toBe(true);
   });
 });

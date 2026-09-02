@@ -170,6 +170,8 @@ export async function readBoundedUploadBody(
 	return body;
 }
 
+const terminalLinkWrites = new Map<string, Promise<void>>();
+
 async function linkedTerminalIds(
 	bb: BbPluginApi,
 	threadId: string,
@@ -185,37 +187,103 @@ async function saveLinkedTerminalIds(
 	await bb.storage.kv.set(terminalLinksKey(threadId), [...new Set(terminalIds)]);
 }
 
+async function withLinkedTerminalIds<Value>(
+	bb: BbPluginApi,
+	threadId: string,
+	update: (current: string[]) => Promise<Value>,
+): Promise<Value> {
+	const key = terminalLinksKey(threadId);
+	const previous = terminalLinkWrites.get(key) ?? Promise.resolve();
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const queued = previous.then(() => gate);
+	terminalLinkWrites.set(key, queued);
+	await previous;
+	try {
+		return await update(await linkedTerminalIds(bb, threadId));
+	} finally {
+		release();
+		if (terminalLinkWrites.get(key) === queued) terminalLinkWrites.delete(key);
+	}
+}
+
 async function rememberLinkedTerminal(
 	bb: BbPluginApi,
 	threadId: string,
 	terminalId: string,
 ): Promise<void> {
-	await saveLinkedTerminalIds(bb, threadId, [
-		...(await linkedTerminalIds(bb, threadId)),
-		terminalId,
-	]);
+	await withLinkedTerminalIds(bb, threadId, async (current) => {
+		await saveLinkedTerminalIds(bb, threadId, [...current, terminalId]);
+	});
+}
+
+export function nextLinkedTerminalIds(
+	linkedIds: readonly string[],
+	results: readonly PromiseSettledResult<{ id: string }>[],
+): string[] {
+	return linkedIds.flatMap((id, index) => {
+		const result = results[index];
+		if (!result) return [id];
+		if (result.status === "fulfilled") return [result.value.id];
+		return [id];
+	});
+}
+
+function unavailableLinkedSession(terminalId: string): Session {
+	return {
+		id: terminalId,
+		title: "Wterm terminal",
+		initialCwd: null,
+		status: "running",
+		updatedAt: 0,
+		lastUserInputAt: null,
+	};
+}
+
+async function loadLinkedTerminals(bb: BbPluginApi, threadId: string) {
+	return withLinkedTerminalIds(bb, threadId, async (linkedIds) => {
+		const linkedResults = await Promise.allSettled(
+			linkedIds.map((terminalId) => bb.sdk.terminals.get({ terminalId })),
+		);
+		const nextIds = nextLinkedTerminalIds(linkedIds, linkedResults);
+		if (
+			nextIds.length !== linkedIds.length ||
+			nextIds.some((id, index) => id !== linkedIds[index])
+		) {
+			await saveLinkedTerminalIds(bb, threadId, nextIds);
+		}
+		const sessions = linkedResults.flatMap((result) =>
+			result.status === "fulfilled" ? [result.value] : [],
+		);
+		const unavailableIds = linkedIds.filter(
+			(_, index) => linkedResults[index]?.status === "rejected",
+		);
+		return { sessions, unavailableIds };
+	});
 }
 
 async function sessionsForThread(bb: BbPluginApi, threadId: string) {
-	const [legacy, linkedIds] = await Promise.all([
+	const [legacy, linked] = await Promise.all([
 		bb.sdk.terminals.list({ scope: legacyScope(threadId) }),
-		linkedTerminalIds(bb, threadId),
+		loadLinkedTerminals(bb, threadId),
 	]);
-	const linkedResults = await Promise.allSettled(
-		linkedIds.map((terminalId) => bb.sdk.terminals.get({ terminalId })),
-	);
-	const linked = linkedResults.flatMap((result) =>
-		result.status === "fulfilled" ? [result.value] : [],
-	);
-	if (linked.length !== linkedIds.length) {
-		await saveLinkedTerminalIds(
-			bb,
-			threadId,
-			linked.map((terminal) => terminal.id),
-		);
-	}
 	return [...new Map(
-		[...legacy.sessions, ...linked].map((terminal) => [terminal.id, terminal]),
+		[...legacy.sessions, ...linked.sessions].map((terminal) => [terminal.id, terminal]),
+	).values()];
+}
+
+async function listedSessionsForThread(bb: BbPluginApi, threadId: string) {
+	const [legacy, linked] = await Promise.all([
+		bb.sdk.terminals.list({ scope: legacyScope(threadId) }),
+		loadLinkedTerminals(bb, threadId),
+	]);
+	const unavailable = linked.unavailableIds.map(unavailableLinkedSession);
+	return [...new Map(
+		[...legacy.sessions.map(mapSession), ...linked.sessions.map(mapSession), ...unavailable].map(
+			(terminal) => [terminal.id, terminal],
+		),
 	).values()];
 }
 
@@ -293,10 +361,25 @@ function mapSession(value: {
 		lastUserInputAt: value.lastUserInputAt ?? null,
 	};
 }
+
+let ghosttyWasmCache: Promise<Uint8Array> | Uint8Array | null = null;
+
+async function ghosttyWasmBytes(): Promise<Uint8Array> {
+	if (ghosttyWasmCache instanceof Uint8Array) return ghosttyWasmCache;
+	if (ghosttyWasmCache) return ghosttyWasmCache;
+	const pending = readFile(bundledWasmUrl()).then((bytes) => {
+		const copy = new Uint8Array(bytes);
+		ghosttyWasmCache = copy;
+		return copy;
+	});
+	ghosttyWasmCache = pending;
+	return pending;
+}
+
 export default function plugin(bb: BbPluginApi) {
 	bb.rpc.register(wtermRpcContract, {
 		async listSessions({ threadId }) {
-			return (await sessionsForThread(bb, threadId)).map(mapSession);
+			return listedSessionsForThread(bb, threadId);
 		},
 		async createTerminal({ threadId }) {
 			const thread = await bb.sdk.threads.get({ threadId });
@@ -321,14 +404,14 @@ export default function plugin(bb: BbPluginApi) {
 			if (!sessions.some((item) => item.id === terminalId))
 				throw new Error("Terminal is not in the requested thread");
 			const replacement = await bb.sdk.terminals.restart({ terminalId });
-			const linkedIds = await linkedTerminalIds(bb, threadId);
-			if (linkedIds.includes(terminalId)) {
+			await withLinkedTerminalIds(bb, threadId, async (linkedIds) => {
+				if (!linkedIds.includes(terminalId)) return;
 				await saveLinkedTerminalIds(
 					bb,
 					threadId,
 					linkedIds.map((id) => (id === terminalId ? replacement.id : id)),
 				);
-			}
+			});
 			return mapSession(replacement);
 		},
 	});
@@ -339,10 +422,12 @@ export default function plugin(bb: BbPluginApi) {
 		"GET",
 		WASM_PATH,
 		async () =>
-			new Response(
-				await readFile(bundledWasmUrl()),
-				{ headers: { "content-type": "application/wasm" } },
-			),
+			new Response(await ghosttyWasmBytes(), {
+				headers: {
+					"cache-control": "public, max-age=31536000, immutable",
+					"content-type": "application/wasm",
+				},
+			}),
 		{ auth: "token" },
 	);
 	bb.http.route(

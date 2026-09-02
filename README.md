@@ -13,7 +13,8 @@ This repository is an early public preview. The plugin ID is
 
 ## Features
 
-- Ghostty terminal emulation through `@wterm/ghostty` and WebAssembly.
+- Ghostty terminal emulation through `@wterm/ghostty` 0.4.0 and WebAssembly.
+- Composer shortcut: a terminal button in the chat footer opens this thread's Wterm panel. On BB hosts that support `experimental_primarySurface`, chat collapses so the terminal fills the thread; use **Exit Full Screen** to return. Packaged BB 0.40.0 does not include that host API, so the same button opens the side panel or session picker instead.
 - Bundled Symbols Nerd Font Mono fallback for Powerline, Starship, and Nerd
   Font prompt icons; no local font installation is required.
 - Every **Wterm terminal** tab starts an independent thread-scoped terminal;
@@ -22,6 +23,7 @@ This repository is an early public preview. The plugin ID is
 - Keyboard, resize, wheel, click, and button-drag mouse input for terminal UIs.
 - Persistent font size controls from 10px to 24px.
 - Native text selection contained inside the terminal and copied on selection.
+- OSC 52 clipboard writes from TUIs such as Herdr, plus copy-on-drag while mouse tracking is enabled. Copy uses a synchronous clipboard write during the pointer gesture so it still works when async clipboard permission is missing.
 - File upload by button or drag-and-drop, plus image upload from the clipboard.
 - Files are written on the terminal host and their quoted path is inserted at
   the prompt using bracketed paste.
@@ -41,12 +43,19 @@ This repository is an early public preview. The plugin ID is
 Install the pinned release:
 
 ```sh
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.15' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.16' --yes
 bb plugin source wterm-terminal-preview
 ```
 
 Open a BB thread and choose **Wterm terminal** from the new-tab menu. Each
-activation creates a new terminal session and opens it in its own panel tab.
+activation, including **+** for another tab, creates a new terminal session.
+The picker in an existing tab can still attach to a running session.
+
+The chat composer also has a terminal button. On BB hosts that support
+`experimental_primarySurface`, it collapses chat so this thread's terminal
+fills the pane (**Exit Full Screen** returns to chat). Packaged BB 0.40.0
+ignores that flag and opens the side panel or picker instead; reloading the
+plugin cannot add full-screen Chat ↔ CLI to that app.
 
 ## Update
 
@@ -55,7 +64,7 @@ installed release explicitly:
 
 ```sh
 bb plugin remove wterm-terminal-preview
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.15' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.16' --yes
 bb plugin source wterm-terminal-preview
 ```
 
@@ -80,11 +89,10 @@ remove-and-install sequence above.
 
 - Use the `-` and `+` toolbar buttons to change the terminal font size. The
   setting is remembered in the browser.
-- In a normal shell, drag to select text.
-- When a TUI such as Herdr has enabled mouse tracking, click and drag are sent
-  to the TUI. Hold `Shift` while dragging to use browser-native selection.
-- A completed native selection is copied to the clipboard when browser
-permissions allow it.
+- In a normal shell, drag to select text. The completed selection is copied even if the drag ends outside the grid.
+- When a TUI such as Herdr has enabled mouse tracking, click and drag are sent to the TUI. Dragging across cells also copies the highlighted text immediately.
+  Hold `Shift` while dragging to use browser-native selection instead.
+- OSC 52 clipboard writes from the TUI (Herdr copy-on-select, Vim `y`, and similar) are applied to the system clipboard during the next terminal click if the browser blocked the original write. Clipboard queries are ignored.
 
 ## Renderer and shell
 

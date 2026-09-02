@@ -12,7 +12,20 @@ import { GhosttyCore } from "@wterm/ghostty";
 import { Terminal, type TerminalHandle } from "@wterm/react";
 import { z } from "zod";
 import type { TerminalAttachment } from "./terminal-attachment.js";
+import {
+  Osc52ClipboardFilter,
+  copyTextToClipboard,
+  flushPendingClipboardCopy,
+  queueClipboardText,
+} from "./osc52-clipboard.js";
 import { createRetryablePromiseCache } from "./retryable-cache.js";
+import {
+  cellAtPoint,
+  extractViewportText,
+  selectionMoved,
+  type CellLayout,
+  type GridPoint,
+} from "./terminal-selection.js";
 // @ts-expect-error CSS side effects are resolved by the plugin bundler.
 import "@wterm/react/css";
 // @ts-expect-error CSS side effects are resolved by the plugin bundler.
@@ -23,19 +36,46 @@ export const GHOSTTY_WASM_URL = `/api/v1/plugins/${PLUGIN_ID}/http/ghostty-vt.wa
 export const NERD_FONT_URL = `/api/v1/plugins/${PLUGIN_ID}/http/symbols-nerd-font-mono-v3.5.0.woff2`;
 export const NERD_FONT_FAMILY = "Wterm Symbols Nerd Font Mono";
 const nerdFontLoads = new WeakMap<object, Promise<void>>();
+const MIN_USABLE_TERMINAL_CELLS = 2;
 
 /**
- * Ghostty WASM 0.3.4 discards mode 1003 before `mouseTracking()` can expose it.
- * Track that one DEC mode at the write boundary, then let Wterm DOM provide
- * its supported click, wheel, and button-drag subset through mode 1002.
+ * Hidden plugin tabs collapse to 0×0. `@wterm/dom` then does
+ * `Math.max(1, floor(0 / cell))` and resizes Ghostty to 1×1, which reflows a
+ * TUI like Herdr into stacked duplicates. Ignore that collapsed size.
+ */
+export function isUsableTerminalSize(cols: number, rows: number): boolean {
+  return (
+    Number.isSafeInteger(cols) &&
+    Number.isSafeInteger(rows) &&
+    cols >= MIN_USABLE_TERMINAL_CELLS &&
+    rows >= MIN_USABLE_TERMINAL_CELLS
+  );
+}
+
+export function shouldApplyTerminalResize(
+  cols: number,
+  rows: number,
+  hasSize: boolean,
+): boolean {
+  return hasSize && isUsableTerminalSize(cols, rows);
+}
+
+/**
+ * Ghostty WASM 0.4.0 still discards mode 1003 before `mouseTracking()` can
+ * expose it. Track that one DEC mode at the write boundary, then let Wterm DOM
+ * provide its supported click, wheel, and button-drag subset through mode 1002.
  */
 export function supportAnyEventMouseMode(core: GhosttyCore): GhosttyCore {
   const decodeMouseControl = new TextDecoder("latin1");
   const writeRaw = core.writeRaw.bind(core);
   const writeString = core.writeString.bind(core);
+  const initCore = core.init.bind(core);
+  const resizeCore = core.resize.bind(core);
   const supportedMode = core.mouseTracking.bind(core);
+  const osc52 = new Osc52ClipboardFilter(queueClipboardText);
   let anyEventMouse = false;
   let controlTail = "";
+  let initialized = false;
 
   const observeMouseMode = (text: string) => {
     const control = controlTail + text;
@@ -56,13 +96,47 @@ export function supportAnyEventMouseMode(core: GhosttyCore): GhosttyCore {
     controlTail = control.slice(-64);
   };
 
-  core.writeRaw = (data) => {
-    observeMouseMode(decodeMouseControl.decode(data));
-    writeRaw(data);
+  core.init = (cols, rows) => {
+    if (!isUsableTerminalSize(cols, rows)) return;
+    if (initialized) {
+      resizeCore(cols, rows);
+      return;
+    }
+    initCore(cols, rows);
+    initialized = true;
   };
-  core.writeString = (data) => {
-    observeMouseMode(data);
-    writeString(data);
+  core.resize = (cols, rows) => {
+    if (!isUsableTerminalSize(cols, rows)) return;
+    if (!initialized) {
+      initCore(cols, rows);
+      initialized = true;
+      return;
+    }
+    resizeCore(cols, rows);
+  };
+  core.writeRaw = (data, afterChunk) => {
+    let filtered = data;
+    try {
+      filtered = osc52.consumeBytes(data);
+      if (controlTail.length > 0 || filtered.indexOf(0x1b) >= 0) {
+        observeMouseMode(decodeMouseControl.decode(filtered));
+      }
+    } catch {
+      filtered = data;
+    }
+    writeRaw(filtered, afterChunk);
+  };
+  core.writeString = (data, afterChunk) => {
+    let filtered = data;
+    try {
+      filtered = osc52.consumeString(data);
+      if (controlTail.length > 0 || filtered.includes("\x1b")) {
+        observeMouseMode(filtered);
+      }
+    } catch {
+      filtered = data;
+    }
+    writeString(filtered, afterChunk);
   };
   core.mouseTracking = () => (anyEventMouse ? 1002 : supportedMode());
   return core;
@@ -184,6 +258,26 @@ interface WtermFontMetricsBoundary {
   _measureCharSize?: () => { charWidth: number; rowHeight: number } | null;
 }
 
+export function terminalCellLayout(
+  terminal: WtermFontMetricsBoundary,
+): CellLayout | null {
+  const metrics = terminal._measureCharSize?.();
+  if (!metrics || !hasRenderedSize(terminal.element)) return null;
+  const viewportRow = terminal.element.querySelector(
+    ".term-row:not(.term-scrollback-row)",
+  );
+  const rowRect = viewportRow?.getBoundingClientRect();
+  const hostRect = terminal.element.getBoundingClientRect();
+  return {
+    charWidth: metrics.charWidth,
+    cols: terminal.cols,
+    originLeft: rowRect?.left ?? hostRect.left,
+    originTop: rowRect?.top ?? hostRect.top,
+    rowHeight: metrics.rowHeight,
+    rows: terminal.rows,
+  };
+}
+
 export function refitTerminalAfterFontChange(
   instance: NonNullable<TerminalHandle["instance"]>,
 ): boolean {
@@ -200,8 +294,9 @@ export function refitTerminalAfterFontChange(
     terminal.element.clientHeight -
     (Number.parseFloat(style.paddingTop) || 0) -
     (Number.parseFloat(style.paddingBottom) || 0);
-  const cols = Math.max(1, Math.floor(contentWidth / metrics.charWidth));
-  const rows = Math.max(1, Math.floor(contentHeight / metrics.rowHeight));
+  const cols = Math.max(0, Math.floor(contentWidth / metrics.charWidth));
+  const rows = Math.max(0, Math.floor(contentHeight / metrics.rowHeight));
+  if (!isUsableTerminalSize(cols, rows)) return false;
   if (cols === terminal.cols && rows === terminal.rows) return false;
 
   terminal.resize(cols, rows);
@@ -227,7 +322,18 @@ export function WtermRenderer({
   const [core, setCore] = useState<GhosttyCore | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [ready, setReady] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
   const clearSelectionBoundaryRef = useRef<(() => void) | null>(null);
+  const tuiCopyDragCleanupRef = useRef<(() => void) | null>(null);
+  const resizeFrameRef = useRef(0);
+  const lastResizeRef = useRef({ cols: 0, rows: 0 });
+  const writesOpenRef = useRef(false);
+  const pendingWritesRef = useRef<Uint8Array[]>([]);
+  const readyRef = useRef(false);
+  const tuiDragRef = useRef<{
+    layout: CellLayout;
+    start: GridPoint;
+  } | null>(null);
   const followBottomRef = useRef(true);
   const terminalFontStyle: TerminalFontStyle = {
     "--term-font-family":
@@ -241,6 +347,9 @@ export function WtermRenderer({
     setCore(null);
     setError(null);
     setReady(false);
+    writesOpenRef.current = false;
+    pendingWritesRef.current = [];
+    lastResizeRef.current = { cols: 0, rows: 0 };
     void loadNerdFont().catch(() => undefined);
     void loadGhosttyCore(wasmUrl).then(
       (loaded) => {
@@ -253,17 +362,28 @@ export function WtermRenderer({
     return () => {
       alive = false;
     };
-  }, [wasmUrl]);
+  }, [reloadNonce, wasmUrl]);
+
+  readyRef.current = ready;
 
   useEffect(() => {
     if (!ready) return;
-    return attachment.subscribe(({ bytes }) =>
-      terminalRef.current?.write(bytes),
-    );
+    return attachment.subscribe(({ bytes }) => {
+      if (!writesOpenRef.current) {
+        pendingWritesRef.current.push(bytes);
+        return;
+      }
+      try {
+        terminalRef.current?.write(bytes);
+      } catch {
+        // A live write must not unmount the renderer. Replay and OSC 52
+        // can throw inside Ghostty without meaning init failed.
+      }
+    });
   }, [attachment, ready]);
 
   useEffect(() => {
-    if (!ready) return;
+    if (!readyRef.current) return;
     const shouldRestoreBottom = followBottomRef.current;
     let settleFrame: number | null = null;
     const frame = window.requestAnimationFrame(() => {
@@ -281,11 +401,15 @@ export function WtermRenderer({
       window.cancelAnimationFrame(frame);
       if (settleFrame !== null) window.cancelAnimationFrame(settleFrame);
     };
-  }, [fontSizePx, ready]);
+  }, [fontSizePx]);
 
   useEffect(
     () => () => {
       clearSelectionBoundaryRef.current?.();
+      tuiCopyDragCleanupRef.current?.();
+      if (resizeFrameRef.current) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+      }
     },
     [],
   );
@@ -298,6 +422,7 @@ export function WtermRenderer({
         return;
       }
 
+      flushPendingClipboardCopy();
       clearSelectionBoundaryRef.current?.();
       const selectionRoot = event.currentTarget;
       document.documentElement.dataset.wtermNativeSelection = "active";
@@ -314,27 +439,12 @@ export function WtermRenderer({
       };
       const finishSelection = () => {
         clearBoundary();
-        const terminal = terminalRef.current?.instance?.element;
         const selection = window.getSelection();
-        if (
-          !terminal ||
-          !selection ||
-          selection.isCollapsed ||
-          selection.rangeCount === 0
-        ) {
-          return;
-        }
-        const range = selection.getRangeAt(0);
-        if (
-          !terminal.contains(range.startContainer) ||
-          !terminal.contains(range.endContainer)
-        ) {
+        if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
           return;
         }
         const text = selection.toString();
-        if (text.length > 0 && navigator.clipboard?.writeText) {
-          void navigator.clipboard.writeText(text).catch(() => undefined);
-        }
+        if (text.length > 0) copyTextToClipboard(text);
       };
 
       clearSelectionBoundaryRef.current = clearBoundary;
@@ -344,14 +454,114 @@ export function WtermRenderer({
     [],
   );
 
+  const handleTuiCopyDragStart = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      flushPendingClipboardCopy();
+      if (event.button !== 0 || event.shiftKey) return;
+      tuiCopyDragCleanupRef.current?.();
+      const instance = terminalRef.current?.instance;
+      const bridge = instance?.bridge;
+      if (!instance || !bridge || bridge.mouseTracking() === 0) return;
+      const layout = terminalCellLayout(
+        instance as unknown as WtermFontMetricsBoundary,
+      );
+      if (!layout) return;
+      const start = cellAtPoint(layout, event.clientX, event.clientY);
+      if (!start) return;
+
+      tuiDragRef.current = { layout, start };
+      const finish = (up: MouseEvent) => {
+        window.removeEventListener("mouseup", finish);
+        if (tuiCopyDragCleanupRef.current === cleanup) {
+          tuiCopyDragCleanupRef.current = null;
+        }
+        const drag = tuiDragRef.current;
+        tuiDragRef.current = null;
+        if (!drag || up.button !== 0) return;
+        const end = cellAtPoint(drag.layout, up.clientX, up.clientY);
+        if (!end || !selectionMoved(drag.start, end)) return;
+        const text = extractViewportText(bridge, drag.start, end);
+        if (text.length > 0) copyTextToClipboard(text);
+      };
+      const cleanup = () => {
+        window.removeEventListener("mouseup", finish);
+        tuiDragRef.current = null;
+        if (tuiCopyDragCleanupRef.current === cleanup) {
+          tuiCopyDragCleanupRef.current = null;
+        }
+      };
+      tuiCopyDragCleanupRef.current = cleanup;
+      window.addEventListener("mouseup", finish);
+    },
+    [],
+  );
+
+  const flushPendingWrites = useCallback(() => {
+    if (writesOpenRef.current) return;
+    writesOpenRef.current = true;
+    const pending = pendingWritesRef.current.splice(0);
+    for (const bytes of pending) {
+      try {
+        terminalRef.current?.write(bytes);
+      } catch {
+        // Replay must not unmount the renderer.
+      }
+    }
+  }, []);
+
+  const handleReady = useCallback(() => {
+    setReady(true);
+    const instance = terminalRef.current?.instance;
+    if (!instance) return;
+    if (refitTerminalAfterFontChange(instance)) {
+      return;
+    }
+    if (
+      !shouldApplyTerminalResize(
+        instance.cols,
+        instance.rows,
+        hasRenderedSize(instance.element),
+      )
+    ) {
+      return;
+    }
+    lastResizeRef.current = { cols: instance.cols, rows: instance.rows };
+    flushPendingWrites();
+    attachment.sendResize(instance.cols, instance.rows);
+  }, [attachment, flushPendingWrites]);
+
   const handleResize = useCallback(
     (cols: number, rows: number) => {
       const element = terminalRef.current?.instance?.element;
-      if (element && hasRenderedSize(element)) {
-        attachment.sendResize(cols, rows);
+      if (
+        !shouldApplyTerminalResize(
+          cols,
+          rows,
+          element ? hasRenderedSize(element) : false,
+        )
+      ) {
+        return;
       }
+      flushPendingWrites();
+      if (
+        lastResizeRef.current.cols === cols &&
+        lastResizeRef.current.rows === rows
+      ) {
+        return;
+      }
+      lastResizeRef.current = { cols, rows };
+      if (resizeFrameRef.current) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+      }
+      resizeFrameRef.current = window.requestAnimationFrame(() => {
+        resizeFrameRef.current = 0;
+        const live = terminalRef.current?.instance?.element;
+        if (live && hasRenderedSize(live)) {
+          attachment.sendResize(cols, rows);
+        }
+      });
     },
-    [attachment],
+    [attachment, flushPendingWrites],
   );
 
   const handleWheelCapture = useCallback(
@@ -372,9 +582,23 @@ export function WtermRenderer({
   }, []);
 
   if (error) {
+    const detail = error instanceof Error ? error.message : String(error);
     return (
       <div className="wterm-renderer-diagnostic" role="alert">
-        Ghostty terminal renderer failed to initialize.
+        <p>Ghostty terminal renderer failed to initialize.</p>
+        <pre className="mt-2 max-w-full overflow-auto text-left text-xs whitespace-pre-wrap">
+          {detail}
+        </pre>
+        <button
+          type="button"
+          className="mt-3 rounded border px-2 py-1 text-xs"
+          onClick={() => {
+            setError(null);
+            setReloadNonce((current) => current + 1);
+          }}
+        >
+          Retry
+        </button>
       </div>
     );
   }
@@ -392,11 +616,12 @@ export function WtermRenderer({
       ref={terminalRef}
       core={core}
       autoResize
-      onReady={() => setReady(true)}
+      onReady={handleReady}
       onError={setError}
       onData={(data) => attachment.sendInput(new TextEncoder().encode(data))}
       onResize={handleResize}
       onMouseDown={handleMouseDown}
+      onMouseDownCapture={handleTuiCopyDragStart}
       onWheelCapture={handleWheelCapture}
       onScroll={handleScroll}
       style={terminalFontStyle}

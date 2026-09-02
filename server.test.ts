@@ -7,6 +7,7 @@ import plugin, {
   buildUploadPath,
   bundledNerdFontUrl,
   bundledWasmUrl,
+  nextLinkedTerminalIds,
   readBoundedUploadBody,
   wtermRpcContract,
 } from "./server";
@@ -160,6 +161,7 @@ describe("Wterm server boundaries", () => {
     const wasm = await harness.wasm();
     const font = await harness.font();
     expect(wasm.headers.get("content-type")).toBe("application/wasm");
+    expect(wasm.headers.get("cache-control")).toContain("immutable");
     expect((await wasm.arrayBuffer()).byteLength).toBeGreaterThan(400_000);
     expect(font.headers.get("content-type")).toBe("font/woff2");
     expect(font.headers.get("x-content-type-options")).toBe("nosniff");
@@ -176,7 +178,7 @@ describe("Wterm server boundaries", () => {
       ),
     );
     const expected =
-      "d96f1f384d94dd10fb8628eea41874784cbe62361fc6f7e6428211f9b9bd0bda";
+      "4a0a02357206349ed52b76ebda8feea4a65e453fe4e199832d8c009d7c41ba4f";
 
     expect(createHash("sha256").update(vendored).digest("hex")).toBe(expected);
     expect(createHash("sha256").update(upstream).digest("hex")).toBe(expected);
@@ -328,6 +330,52 @@ describe("Wterm server boundaries", () => {
     expect(kvSet).toHaveBeenCalledWith("thread-terminals:thread-1", [
       "term-replacement",
     ]);
+  });
+
+  it("keeps linked terminal ids when a host lookup fails transiently", async () => {
+    const register = vi.fn();
+    const kvGet = vi.fn().mockResolvedValue(["term-environment"]);
+    const kvSet = vi.fn().mockResolvedValue(undefined);
+    const get = vi.fn().mockRejectedValue(new Error("host unavailable"));
+    const bb = {
+      http: { route: vi.fn() },
+      rpc: { register },
+      storage: { kv: { get: kvGet, set: kvSet } },
+      sdk: {
+        terminals: {
+          get,
+          list: vi.fn().mockResolvedValue({ sessions: [] }),
+        },
+      },
+    } as never;
+    plugin(bb);
+    const handlers = register.mock.calls[0]?.[1];
+
+    await expect(
+      handlers.listSessions({ threadId: "thread-1" }),
+    ).resolves.toEqual([
+      {
+        id: "term-environment",
+        title: "Wterm terminal",
+        initialCwd: null,
+        status: "running",
+        updatedAt: 0,
+        lastUserInputAt: null,
+      },
+    ]);
+    expect(kvSet).not.toHaveBeenCalled();
+  });
+
+  it("does not drop a linked id from a rejected lookup", () => {
+    expect(
+      nextLinkedTerminalIds(
+        ["term-a", "term-b"],
+        [
+          { status: "rejected", reason: new Error("timeout") },
+          { status: "fulfilled", value: { id: "term-b" } },
+        ],
+      ),
+    ).toEqual(["term-a", "term-b"]);
   });
 
   it("writes verified bytes to a UUID path below the selected terminal cwd", async () => {

@@ -35,6 +35,8 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
   private attachedNextSeq: number | null = null;
   private detached = false;
   private lastDeliveredSeq = -1;
+  private lastResizeCols = 0;
+  private lastResizeRows = 0;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly listeners = new Set<
@@ -59,6 +61,9 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
       this.reconnectTimer = null;
     }
     this.attachedNextSeq = null;
+    this.pendingBeforeAttach.clear();
+    this.pendingLive.clear();
+    this.pendingReplay.clear();
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const endpoint = `${protocol}//${window.location.host}/ws/terminals/${encodeURIComponent(this.terminalId)}`;
     const socket = new WebSocket(endpoint);
@@ -94,6 +99,9 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
   sendResize(cols: number, rows: number): boolean {
     if (!Number.isSafeInteger(cols) || cols <= 0) return false;
     if (!Number.isSafeInteger(rows) || rows <= 0) return false;
+    if (cols === this.lastResizeCols && rows === this.lastResizeRows) return true;
+    this.lastResizeCols = cols;
+    this.lastResizeRows = rows;
     return this.sendResizeMessage(JSON.stringify({ type: "resize", cols, rows }));
   }
 
@@ -133,6 +141,7 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
       this.flushWhenReplayComplete();
       return;
     }
+    if (message.chunk.seq <= this.lastDeliveredSeq) return;
     if (this.attachedNextSeq === null) {
       this.pendingBeforeAttach.set(message.chunk.seq, message.chunk);
       return;
@@ -154,12 +163,11 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
 
   private flushWhenReplayComplete(): void {
     if (this.attachedNextSeq === null) return;
-    if (
-      this.attachedNextSeq > 0 &&
-      !this.pendingReplay.has(this.attachedNextSeq - 1)
-    ) {
-      return;
-    }
+    const replayCaughtUp =
+      this.attachedNextSeq === 0 ||
+      this.lastDeliveredSeq >= this.attachedNextSeq - 1 ||
+      this.pendingReplay.has(this.attachedNextSeq - 1);
+    if (!replayCaughtUp) return;
     const replay = [...this.pendingReplay.values()].sort(
       (left, right) => left.seq - right.seq,
     );
@@ -183,34 +191,35 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
     for (const listener of this.listeners) listener(decoded);
   }
 
+  private queueWhileSocketSettles(kind: "input" | "resize", message: string): boolean {
+    if (kind === "resize") this.pendingResize = message;
+    else this.pendingInputs.push(message);
+    if (this.socket === null) this.connect();
+    return true;
+  }
+
   private sendInputMessage(message: string): boolean {
     if (this.detached) return false;
-    if (this.socket === null) {
-      this.pendingInputs.push(message);
-      this.connect();
-      return true;
+    if (this.socket === null || this.socket.readyState !== WebSocket.OPEN) {
+      if (this.socket?.readyState === WebSocket.CONNECTING) {
+        this.pendingInputs.push(message);
+        return true;
+      }
+      return this.queueWhileSocketSettles("input", message);
     }
-    if (this.socket.readyState === WebSocket.CONNECTING) {
-      this.pendingInputs.push(message);
-      return true;
-    }
-    if (this.socket.readyState !== WebSocket.OPEN) return false;
     this.socket.send(message);
     return true;
   }
 
   private sendResizeMessage(message: string): boolean {
     if (this.detached) return false;
-    if (this.socket === null) {
-      this.pendingResize = message;
-      this.connect();
-      return true;
+    if (this.socket === null || this.socket.readyState !== WebSocket.OPEN) {
+      if (this.socket?.readyState === WebSocket.CONNECTING) {
+        this.pendingResize = message;
+        return true;
+      }
+      return this.queueWhileSocketSettles("resize", message);
     }
-    if (this.socket.readyState === WebSocket.CONNECTING) {
-      this.pendingResize = message;
-      return true;
-    }
-    if (this.socket.readyState !== WebSocket.OPEN) return false;
     this.socket.send(message);
     return true;
   }
@@ -224,7 +233,10 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
 
   private scheduleReconnect(): void {
     if (this.detached || this.reconnectTimer !== null) return;
-    const delay = Math.min(2_000, 100 * 2 ** this.reconnectAttempts);
+    const delay =
+      this.reconnectAttempts === 0
+        ? 0
+        : Math.min(2_000, 100 * 2 ** this.reconnectAttempts);
     this.reconnectAttempts += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -284,6 +296,10 @@ function parseTerminalServerMessage(raw: unknown): TerminalServerMessage | null 
 }
 
 export function decodeBase64(value: string): Uint8Array {
+  const fromBase64 = (Uint8Array as unknown as {
+    fromBase64?: (input: string) => Uint8Array;
+  }).fromBase64;
+  if (fromBase64) return fromBase64(value);
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) {

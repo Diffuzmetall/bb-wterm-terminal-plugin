@@ -1,17 +1,29 @@
 import { lazy, useEffect, useRef, useState } from "react";
-import { definePluginApp, useBbContext, useRpc } from "@bb/plugin-sdk/app";
+import {
+	definePluginApp,
+	useBbContext,
+	useBbNavigate,
+	useRpc,
+} from "@bb/plugin-sdk/app";
 import * as BbApp from "@bb/plugin-sdk/app";
 import type { wtermRpcContract } from "./server";
 import {
-	reusableTerminalId,
+	evaluateTerminalPresence,
 	type TerminalOpenCandidate,
 } from "./terminal-open-policy.js";
+import { trackWtermMount } from "./wterm-open-count.js";
+import { SessionTerminalComposerAction } from "./session-terminal-action.js";
+import {
+	resolveSessionTerminalId,
+	revealSessionTerminalPanel,
+} from "./session-terminal-composer.js";
+import { toast } from "sonner";
+import "./app.css";
 
 const PLUGIN_ID = "wterm-terminal-preview";
 const PANEL_ACTION_ID = "terminal";
 const PANEL_TITLE = "Wterm terminal";
 const LAST_TERMINAL_STORAGE_PREFIX = "bb.wterm-terminal-preview";
-const openWtermTabsByThread = new Map<string, number>();
 
 const loadTerminalPanel = () => import("./terminal-panel.js");
 const TerminalPanel = lazy(loadTerminalPanel);
@@ -73,17 +85,9 @@ function terminalCandidates(value: unknown): TerminalOpenCandidate[] {
 
 function useTrackOpenWtermTab(threadId: string, params: unknown): void {
 	const terminalId = hasTerminalParams(params) ? params.terminalId : null;
+	useEffect(() => trackWtermMount(threadId), [threadId]);
 	useEffect(() => {
-		openWtermTabsByThread.set(
-			threadId,
-			(openWtermTabsByThread.get(threadId) ?? 0) + 1,
-		);
 		if (terminalId) writeLastTerminalId(threadId, terminalId);
-		return () => {
-			const remaining = (openWtermTabsByThread.get(threadId) ?? 1) - 1;
-			if (remaining > 0) openWtermTabsByThread.set(threadId, remaining);
-			else openWtermTabsByThread.delete(threadId);
-		};
 	}, [terminalId, threadId]);
 }
 
@@ -277,49 +281,56 @@ function SelectedTerminal({
 	replace: (params: unknown) => void;
 }) {
 	const rpc = useRpc<typeof wtermRpcContract>();
-	const replaceRef = useRef(replace);
+	const rpcRef = useRef(rpc);
 	const [retry, setRetry] = useState(0);
-	const [state, setState] = useState<
-		"checking" | "ready" | "missing" | "error"
-	>("checking");
-	replaceRef.current = replace;
+	const [state, setState] = useState<"ready" | "missing" | "error">("ready");
+	rpcRef.current = rpc;
 
 	useEffect(() => {
 		let cancelled = false;
-		setState("checking");
-		const timeout = window.setTimeout(() => {
-			if (!cancelled) setState("error");
-		}, 10_000);
-		rpc
-			.call("listSessions", { threadId })
-			.then(
-				(items) => {
-					if (cancelled) return;
-					window.clearTimeout(timeout);
-					const selected = items.find((item) => item.id === params.terminalId);
-					if (selected && isActive(selected)) {
-						setState("ready");
-						return;
-					}
-					setState("missing");
-					replaceRef.current(null);
-				},
-				() => {
-					if (!cancelled) {
-						window.clearTimeout(timeout);
-						setState("error");
-					}
-				},
-			)
-			.catch(() => {});
+		let attempt = 0;
+		let retryTimer = 0;
+		const verify = () => {
+			attempt += 1;
+			rpcRef.current
+				.call("listSessions", { threadId })
+				.then(
+					(items) => {
+						if (cancelled) return;
+						const presence = evaluateTerminalPresence({
+							attempt,
+							sessions: items,
+							terminalId: params.terminalId,
+						});
+						if (presence === "retry") {
+							retryTimer = window.setTimeout(verify, 400);
+							return;
+						}
+						setState(presence);
+					},
+					() => {
+						if (cancelled) return;
+						const presence = evaluateTerminalPresence({
+							attempt,
+							sessions: null,
+							terminalId: params.terminalId,
+						});
+						if (presence === "retry") {
+							retryTimer = window.setTimeout(verify, 400);
+							return;
+						}
+						setState(presence === "missing" ? "error" : presence);
+					},
+				)
+				.catch(() => {});
+		};
+		verify();
 		return () => {
 			cancelled = true;
-			window.clearTimeout(timeout);
+			window.clearTimeout(retryTimer);
 		};
-	}, [params.terminalId, retry, rpc, threadId]);
+	}, [params.terminalId, retry, threadId]);
 
-	if (state === "ready")
-		return <TerminalPanel threadId={threadId} params={params} />;
 	if (state === "missing")
 		return (
 			<Picker
@@ -341,7 +352,7 @@ function SelectedTerminal({
 				</button>
 			</div>
 		);
-	return <div className="p-4 text-sm">Checking terminal session…</div>;
+	return <TerminalPanel threadId={threadId} params={params} />;
 }
 
 function Panel({
@@ -435,7 +446,59 @@ function hasTerminalParams(value: unknown): value is TerminalParams {
 	);
 }
 
+async function openSessionTerminal(
+	threadId: string,
+	openPanel: (terminalId: string) => void,
+): Promise<void> {
+	void loadTerminalPanel()
+		.then(({ preloadTerminalPanel }) => preloadTerminalPanel())
+		.catch(() => {});
+	const terminalId = await resolveSessionTerminalId({
+		createTerminalId: async () =>
+			createdTerminalId(await callBackendRpc("createTerminal", { threadId })),
+		lastTerminalId: readLastTerminalId(threadId),
+		listCandidates: async () =>
+			terminalCandidates(await callBackendRpc("listSessions", { threadId })),
+	});
+	writeLastTerminalId(threadId, terminalId);
+	openPanel(terminalId);
+}
+
+function OpenSessionTerminalAction() {
+	const navigate = useBbNavigate();
+	return (
+		<SessionTerminalComposerAction
+			onOpen={async (threadId) => {
+				try {
+					void loadTerminalPanel()
+						.then(({ preloadTerminalPanel }) => preloadTerminalPanel())
+						.catch(() => {});
+					const lastTerminalId = readLastTerminalId(threadId);
+					revealSessionTerminalPanel({
+						actionId: PANEL_ACTION_ID,
+						openThreadPanel: navigate.openThreadPanel,
+						...(lastTerminalId === null ? {} : { terminalId: lastTerminalId }),
+						title: PANEL_TITLE,
+					});
+				} catch (error) {
+					const message =
+						error instanceof Error ? error.message : String(error);
+					console.warn(
+						`[plugin:${PLUGIN_ID}] failed to open session terminal: ${message}`,
+					);
+					toast.error(message);
+				}
+			}}
+		/>
+	);
+}
+
 export default definePluginApp((app) => {
+	app.composer.customize({
+		id: "session-terminal",
+		scopes: ["thread"],
+		actions: [{ id: "open-session-terminal", component: OpenSessionTerminalAction }],
+	});
 	app.slots.threadPanelAction({
 		id: PANEL_ACTION_ID,
 		title: PANEL_TITLE,
@@ -445,31 +508,15 @@ export default definePluginApp((app) => {
 			void loadTerminalPanel()
 				.then(({ preloadTerminalPanel }) => preloadTerminalPanel())
 				.catch(() => {});
-			const openTabCount = openWtermTabsByThread.get(threadId) ?? 0;
-			const lastTerminalId = readLastTerminalId(threadId);
-			let terminalId: string | null = null;
-			if (openTabCount === 0 && lastTerminalId !== null) {
-				const sessions = await callBackendRpc("listSessions", { threadId }).catch(
-					() => [],
-				);
-				terminalId = reusableTerminalId({
-					lastTerminalId,
-					openTabCount,
-					sessions: terminalCandidates(sessions),
-				});
-			}
-			if (terminalId === null) {
-				terminalId = createdTerminalId(
-					await callBackendRpc("createTerminal", { threadId }),
-				);
-			}
+			const terminalId = createdTerminalId(
+				await callBackendRpc("createTerminal", { threadId }),
+			);
 			writeLastTerminalId(threadId, terminalId);
-			const panelOptions = {
+			openPanel({
 				title: PANEL_TITLE,
 				params: { schemaVersion: 1, terminalId },
 				experimental_claimedTerminalId: terminalId,
-			};
-			openPanel(panelOptions);
+			});
 		},
 		component: function TerminalAction({ threadId, params }) {
 			const { threadId: contextThreadId } = useBbContext();

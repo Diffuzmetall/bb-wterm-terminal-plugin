@@ -7,6 +7,7 @@ import {
 class FakeWebSocket {
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;
+  static readonly CLOSING = 2;
   static readonly CLOSED = 3;
   static instances: FakeWebSocket[] = [];
 
@@ -29,6 +30,10 @@ class FakeWebSocket {
   disconnect(): void {
     this.readyState = FakeWebSocket.CLOSED;
     this.onclose?.(new Event("close") as CloseEvent);
+  }
+
+  beginClosing(): void {
+    this.readyState = FakeWebSocket.CLOSING;
   }
 
   open(): void {
@@ -192,5 +197,63 @@ describe("LegacyTerminalAttachment", () => {
     expect(socket.closeCount).toBe(1);
     expect(attachment.sendInput(new Uint8Array([1]))).toBe(false);
     expect(attachment.sendResize(80, 24)).toBe(false);
+  });
+
+  it("skips replay already delivered before reconnect", () => {
+    vi.useFakeTimers();
+    const attachment = new LegacyTerminalAttachment("terminal-1");
+    const received: string[] = [];
+    attachment.subscribe((chunk) =>
+      received.push(new TextDecoder().decode(chunk.bytes)),
+    );
+    attachment.connect();
+    const first = FakeWebSocket.instances[0]!;
+    first.receive({ type: "attached", nextSeq: 0 });
+    first.receive(output(0, "old-0"));
+    first.receive(output(1, "old-1"));
+    first.disconnect();
+    vi.advanceTimersByTime(0);
+
+    const second = FakeWebSocket.instances[1]!;
+    second.receive(output(0, "replay-0"));
+    second.receive({ type: "attached", nextSeq: 2 });
+    second.receive(output(2, "live"));
+
+    expect(received).toEqual(["old-0", "old-1", "live"]);
+    attachment.detach();
+  });
+
+  it("queues input while the socket is closing", () => {
+    vi.useFakeTimers();
+    const attachment = new LegacyTerminalAttachment("terminal-1");
+    attachment.connect();
+    const first = FakeWebSocket.instances[0]!;
+    first.open();
+    first.beginClosing();
+
+    expect(attachment.sendInput(new TextEncoder().encode("keep"))).toBe(true);
+    expect(first.sent).toEqual([]);
+
+    first.disconnect();
+    vi.advanceTimersByTime(0);
+    const second = FakeWebSocket.instances[1]!;
+    second.open();
+    expect(second.sent.map((message) => JSON.parse(message))).toEqual([
+      { type: "input", dataBase64: "a2VlcA==" },
+    ]);
+    attachment.detach();
+  });
+
+  it("does not resend an unchanged resize", () => {
+    const attachment = new LegacyTerminalAttachment("terminal-1");
+    attachment.connect();
+    const socket = FakeWebSocket.instances[0]!;
+    socket.open();
+    expect(attachment.sendResize(80, 24)).toBe(true);
+    expect(attachment.sendResize(80, 24)).toBe(true);
+    expect(socket.sent.map((message) => JSON.parse(message))).toEqual([
+      { type: "resize", cols: 80, rows: 24 },
+    ]);
+    attachment.detach();
   });
 });
