@@ -86,7 +86,9 @@ describe("encodeBase64", () => {
   it("encodes a 100KiB buffer round-trip", () => {
     const bytes = new Uint8Array(100 * 1024);
     for (let i = 0; i < bytes.length; i += 1) bytes[i] = i & 0xff;
-    expect(decodeBase64(encodeBase64(bytes))).toEqual(bytes);
+    const decoded = decodeBase64(encodeBase64(bytes));
+    expect(decoded).toHaveLength(bytes.length);
+    expect(decoded.every((byte, index) => byte === bytes[index])).toBe(true);
   });
 });
 

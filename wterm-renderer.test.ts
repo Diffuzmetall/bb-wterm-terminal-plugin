@@ -74,6 +74,40 @@ describe("collapsed terminal sizes", () => {
     expect(shouldApplyTerminalResize(80, 24, false)).toBe(false);
     expect(shouldApplyTerminalResize(80, 24, true)).toBe(true);
   });
+
+  it("settles panel transitions before sending the final PTY resize", () => {
+    const source = readFileSync(
+      new URL("./wterm-renderer.tsx", import.meta.url),
+      "utf8",
+    );
+    const handleResizeSource = source.slice(
+      source.indexOf("const handleResize"),
+      source.indexOf("const handleWheelCapture"),
+    );
+    expect(source).toContain("const TERMINAL_RESIZE_SETTLE_MS = 250;");
+    expect(handleResizeSource).toContain(
+      "window.clearTimeout(resizeTimerRef.current)",
+    );
+    expect(handleResizeSource).toContain(
+      "resizeTimerRef.current = window.setTimeout",
+    );
+    expect(handleResizeSource).toContain(
+      "attachment.sendResize(instance.cols, instance.rows)",
+    );
+    expect(handleResizeSource).toContain(
+      "lastResizeRef.current = { cols: instance.cols, rows: instance.rows }",
+    );
+    expect(
+      handleResizeSource.indexOf(
+        "attachment.sendResize(instance.cols, instance.rows)",
+      ),
+    ).toBeLessThan(
+      handleResizeSource.indexOf(
+        "lastResizeRef.current = { cols: instance.cols, rows: instance.rows }",
+      ),
+    );
+    expect(source).not.toContain("resizeFrameRef");
+  });
 });
 
 describe("first paint and TUI scrollback", () => {

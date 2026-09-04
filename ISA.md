@@ -3,9 +3,9 @@ task: "Make Wterm fast, flicker-free, and reliable"
 slug: 20260904-011200_wterm-speed-and-feel
 project: bb-wterm-terminal-plugin
 phase: complete
-progress: 46/46
+progress: 49/49
 started: 2026-09-04T01:12:10+03:00
-updated: 2026-09-04T12:55:00+03:00
+updated: 2026-09-04T15:27:15+03:00
 principal_stated_goal: "изучи пожалуйста его докумментацию рантайм как он связан с bb как он в целом работает и дай мне детальный план что внедрить что делать чтобы он работал быстро четко не фликерил там все круто открывалось тут в вебе и так далее"
 principal_stated_goal_source: conversation
 principal_stated_goal_signal: 2
@@ -221,6 +221,16 @@ Why: flicker and multi-tab stalls are user-visible; unit tests cannot close the 
 - [x] ISC-38: headed BB web: opening two Wterm tabs in one thread does not stall verify for multiple seconds.
 - [x] ISC-42: headed BB web: the second new Wterm tab is a different session than the first (not a silent reopen of last).
 
+### F8 · BWT-4 right-edge resize stability
+
+Why: dragging the terminal panel's right edge must keep the background, grid,
+cursor, and PTY geometry fitted as one surface instead of leaving a stale or
+blank region.
+
+- [x] ISC-44: reproduce the BWT-4 attachment symptom during right-edge shrink/grow in headed BB web.
+- [x] ISC-45: repeated right-edge shrink/grow keeps renderer bounds and PTY columns synchronized with no stale or blank strip; focused regression, full suite, build, and browser console/network checks pass.
+- [x] ISC-46: BWT-4 contains a substantive update, result artifact, and `in_review` status.
+
 ## Anti-claims
 
 - Anti: tests do not depend on the sibling BB workspace at runtime.
@@ -245,11 +255,13 @@ Why: flicker and multi-tab stalls are user-visible; unit tests cannot close the 
 - 2026-09-04: Closed fog bead `.16` without implementation. Epic F1–F5 unit/ISC verified; F6 headed observed.
 - 2026-09-04: Killed fog PERF-03 / attachment lift — headed remount reconnect was not user-visible; out of this climb.
 - 2026-09-04: Killed fog browser HTTP cache for WASM/font — still needs security review; not this climb.
+- 2026-09-04: BWT-4 reproduction showed two PTY resizes during BB's 220ms maximize transition. Keep local Wterm auto-resize responsive, but debounce SIGWINCH delivery for 250ms and record only delivered geometry.
 
 ## Learning
 
 - 2026-08-15 — Conjectured: test-only migration. Refuted by: source-install WASM resolved one directory too high. Learned: source and built asset resolution both need coverage. Criterion now: ISC-2/ISC-12 still demand aligned WASM after `npm ci`.
 - 2026-09-04 — Conjectured: hide/show stall needs lifted WebSocket attachment. Refuted by: headed `thr_fgn2njixb7` remount with cached WASM and immediate prompt. Learned: remount ≠ user-visible reconnect cost on 0.41. Criterion now: PERF-03 stays killed, not an ISC.
+- 2026-09-04 — Conjectured: frame-level resize forwarding was harmless. Refuted by: WebSocket instrumentation observed intermediate 74x31 then 127x31 PTY sizes during one maximize animation. Learned: the local grid may follow animation frames, but full-screen TUIs need one settled SIGWINCH; hidden sizes must cancel pending delivery without marking it complete.
 
 ## Verification
 
@@ -276,3 +288,4 @@ Why: flicker and multi-tab stalls are user-visible; unit tests cannot close the 
 - ISC-34: missing `experimental_useReplaceCurrentPluginTab` uses LegacyTerminalAction; `experimental_primarySurface` is only an openThreadPanel option (2026-09-04).
 - ISC-35: rg on ts/tsx/js found no sibling BB workspace imports (2026-09-04).
 - ISC-36/37/38/42: headed BB web 2026-09-04 07:46Z, plugin 0.3.16 via `bb plugin dev` on <http://127.0.0.1:38896> thread `thr_fgn2njixb7`. First tab `term_7d8wrt626z` Ghostty with existing scrollback (agent-browser TUI). Open new tab → Wterm created `term_3gwkt6m52p` (created_at 1788508010144, updated +398ms, status running); KV `thread-terminals:thr_fgn2njixb7` holds both ids; second tab paints a fresh starship prompt `0.3.16` with no first-tab scrollback. Remount second tab: `unavail=[]`, no “no longer available”, Ghostty content without empty wait. Loading CSS remains `.wterm-renderer--loading { background: var(--term-bg, #1e1e1e) }` (WASM already cached so skeleton not screenshotable). `npm test` 13 files / 97 pass same commit.
+- ISC-44/45/46: BWT-4 attachment reproduced in headed Chromium on <http://127.0.0.1:38896> thread `thr_fgn2njixb7`. Before fix, maximize emitted intermediate PTY sizes 74x31 and 127x31; final bundle `f16766173b42ef1f` emits one 61x31 on restore and one 128x31 on maximize, with Herdr filling the surface and no stale/blank strip. `wterm-renderer.test.ts` 11/11; full suite 13 files / 98 tests; `npm run build`; browser console/page errors and 4xx/5xx empty. BWT-4 attachment `01M1P65D7W4RXA0DQ2VYXQHP8Y`; status `in_review` (2026-09-04).

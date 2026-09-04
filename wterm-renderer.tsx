@@ -37,6 +37,7 @@ export const NERD_FONT_URL = `/api/v1/plugins/${PLUGIN_ID}/http/symbols-nerd-fon
 export const NERD_FONT_FAMILY = "Wterm Symbols Nerd Font Mono";
 const nerdFontLoads = new WeakMap<object, Promise<void>>();
 const MIN_USABLE_TERMINAL_CELLS = 2;
+const TERMINAL_RESIZE_SETTLE_MS = 250;
 
 /**
  * Hidden plugin tabs collapse to 0×0. `@wterm/dom` then does
@@ -325,7 +326,7 @@ export function WtermRenderer({
   const [reloadNonce, setReloadNonce] = useState(0);
   const clearSelectionBoundaryRef = useRef<(() => void) | null>(null);
   const tuiCopyDragCleanupRef = useRef<(() => void) | null>(null);
-  const resizeFrameRef = useRef(0);
+  const resizeTimerRef = useRef<number | null>(null);
   const lastResizeRef = useRef({ cols: 0, rows: 0 });
   const writesOpenRef = useRef(false);
   const pendingWritesRef = useRef<Uint8Array[]>([]);
@@ -408,8 +409,8 @@ export function WtermRenderer({
       clearSelectionBoundaryRef.current?.();
       tuiCopyDragCleanupRef.current?.();
       followScrollCleanupRef.current?.();
-      if (resizeFrameRef.current) {
-        window.cancelAnimationFrame(resizeFrameRef.current);
+      if (resizeTimerRef.current !== null) {
+        window.clearTimeout(resizeTimerRef.current);
       }
     },
     [],
@@ -553,26 +554,39 @@ export function WtermRenderer({
           element ? hasRenderedSize(element) : false,
         )
       ) {
+        if (resizeTimerRef.current !== null) {
+          window.clearTimeout(resizeTimerRef.current);
+          resizeTimerRef.current = null;
+        }
         return;
       }
       flushPendingWrites();
+      if (resizeTimerRef.current !== null) {
+        window.clearTimeout(resizeTimerRef.current);
+        resizeTimerRef.current = null;
+      }
       if (
         lastResizeRef.current.cols === cols &&
         lastResizeRef.current.rows === rows
       ) {
         return;
       }
-      lastResizeRef.current = { cols, rows };
-      if (resizeFrameRef.current) {
-        window.cancelAnimationFrame(resizeFrameRef.current);
-      }
-      resizeFrameRef.current = window.requestAnimationFrame(() => {
-        resizeFrameRef.current = 0;
-        const live = terminalRef.current?.instance?.element;
-        if (live && hasRenderedSize(live)) {
-          attachment.sendResize(cols, rows);
+      // BB animates panel maximize/restore for 220ms. Keep Wterm's local grid
+      // responsive, but send only the settled PTY size so TUIs do not paint a
+      // series of intermediate SIGWINCH frames over the changing grid.
+      resizeTimerRef.current = window.setTimeout(() => {
+        resizeTimerRef.current = null;
+        const instance = terminalRef.current?.instance;
+        if (
+          instance &&
+          hasRenderedSize(instance.element) &&
+          (lastResizeRef.current.cols !== instance.cols ||
+            lastResizeRef.current.rows !== instance.rows)
+        ) {
+          attachment.sendResize(instance.cols, instance.rows);
+          lastResizeRef.current = { cols: instance.cols, rows: instance.rows };
         }
-      });
+      }, TERMINAL_RESIZE_SETTLE_MS);
     },
     [attachment, flushPendingWrites],
   );
