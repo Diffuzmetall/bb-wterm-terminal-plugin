@@ -6,6 +6,7 @@ import {
   shouldApplyTerminalResize,
   shouldClearSelectionOnWheel,
   computeFollowBottom,
+  encodeAnyEventMouseMove,
   supportAnyEventMouseMode,
 } from "./wterm-renderer";
 
@@ -172,6 +173,40 @@ describe("computeFollowBottom", () => {
     expect(source).toContain('scroller.addEventListener("scroll", onScroll');
     expect(source).toContain("if (element && shouldRestoreBottom)");
     expect(source).not.toContain("onScroll=");
+  });
+});
+
+describe("DEC 1003 any-event mouse motion", () => {
+  const point = { col: 7, row: 4 };
+
+  it("encodes one-based SGR no-button motion with modifiers", () => {
+    expect(
+      encodeAnyEventMouseMove({
+        active: true,
+        altKey: true,
+        buttons: 0,
+        cell: point,
+        ctrlKey: true,
+        previous: null,
+        shiftKey: false,
+      }),
+    ).toBe("\x1b[<59;8;5M");
+  });
+
+  it("skips duplicate cells, button drags, shift selection, and inactive mode", () => {
+    const input = {
+      active: true,
+      altKey: false,
+      buttons: 0,
+      cell: point,
+      ctrlKey: false,
+      previous: point,
+      shiftKey: false,
+    };
+    expect(encodeAnyEventMouseMove(input)).toBeNull();
+    expect(encodeAnyEventMouseMove({ ...input, previous: null, buttons: 1 })).toBeNull();
+    expect(encodeAnyEventMouseMove({ ...input, previous: null, shiftKey: true })).toBeNull();
+    expect(encodeAnyEventMouseMove({ ...input, previous: null, active: false })).toBeNull();
   });
 });
 

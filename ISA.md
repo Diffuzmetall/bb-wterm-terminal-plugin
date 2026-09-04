@@ -3,9 +3,9 @@ task: "Make Wterm fast, flicker-free, and reliable"
 slug: 20260904-011200_wterm-speed-and-feel
 project: bb-wterm-terminal-plugin
 phase: complete
-progress: 49/49
+progress: 53/53
 started: 2026-09-04T01:12:10+03:00
-updated: 2026-09-04T15:27:15+03:00
+updated: 2026-09-04T18:16:50+03:00
 principal_stated_goal: "изучи пожалуйста его докумментацию рантайм как он связан с bb как он в целом работает и дай мне детальный план что внедрить что делать чтобы он работал быстро четко не фликерил там все круто открывалось тут в вебе и так далее"
 principal_stated_goal_source: conversation
 principal_stated_goal_signal: 2
@@ -132,6 +132,10 @@ Make the installed Wterm preview in the BB web app open quickly, stay visually s
 | ISC-36 | e2e/manual | headed BB: first open shows dark skeleton then content, no white flash | observed | agent-browser / BB web | literal |
 | ISC-37 | e2e/manual | headed BB: create terminal does not show unavailable within grace | observed | agent-browser / BB web | literal |
 | ISC-38 | e2e/manual | headed BB: two tabs open without multi-second verify stall | observed | agent-browser / BB web | literal |
+| ISC-47 | unit | fragmented DEC 1003 enable/disable and switch to mutually exclusive 1002 | exact enabled state + generation | Vitest + Ghostty WASM | derived: correct Herdr hover state |
+| ISC-48 | unit | no-button SGR motion is one-based and cell-deduplicated | code 35; one report per changed cell | Vitest | derived: responsive without event flood |
+| ISC-49 | e2e/manual | headed Herdr hover precedes click and reaches PTY | SGR 35 before press/release; no same-cell duplicates | agent-browser / WebSocket probe | literal |
+| ISC-50 | anti | existing click, drag, resize, replay, and security behavior remains green | full suite + build | Vitest + bb CLI | literal |
 
 ## Features
 
@@ -231,6 +235,17 @@ blank region.
 - [x] ISC-45: repeated right-edge shrink/grow keeps renderer bounds and PTY columns synchronized with no stale or blank strip; focused regression, full suite, build, and browser console/network checks pass.
 - [x] ISC-46: BWT-4 contains a substantive update, result artifact, and `in_review` status.
 
+### F9 · Herdr any-event mouse semantics
+
+Why: Herdr requests DEC 1003 because its mouse-driven UI needs hover/cell
+transitions before the click. Downgrading 1003 to 1002 keeps press/drag but
+makes menus feel stale or late even when click transport itself is fast.
+
+- [x] ISC-47: the Ghostty wrapper tracks fragmented 1003 sequences and clears its override when the app selects another mouse tracking mode.
+- [x] ISC-48: no-button SGR movement uses code 35 and emits once per changed cell; button drags and Shift selection stay on existing paths.
+- [x] ISC-49: headed Herdr sends a hover report before click press/release, with same-cell movement deduplicated.
+- [x] ISC-50: the complete suite and plugin build remain green.
+
 ## Anti-claims
 
 - Anti: tests do not depend on the sibling BB workspace at runtime.
@@ -256,12 +271,14 @@ blank region.
 - 2026-09-04: Killed fog PERF-03 / attachment lift — headed remount reconnect was not user-visible; out of this climb.
 - 2026-09-04: Killed fog browser HTTP cache for WASM/font — still needs security review; not this climb.
 - 2026-09-04: BWT-4 reproduction showed two PTY resizes during BB's 220ms maximize transition. Keep local Wterm auto-resize responsive, but debounce SIGWINCH delivery for 250ms and record only delivered geometry.
+- 2026-09-04: Herdr click transport is not the bottleneck: click → WebSocket input measured 0.3–2.9ms, while the multi-chunk PTY redraw completed around 99–111ms. The actionable compatibility defect was the local 1003 → 1002 downgrade: add only missing no-button SGR motion, deduplicated by terminal cell; do not invent a broader renderer/WebSocket optimization.
 
 ## Learning
 
 - 2026-08-15 — Conjectured: test-only migration. Refuted by: source-install WASM resolved one directory too high. Learned: source and built asset resolution both need coverage. Criterion now: ISC-2/ISC-12 still demand aligned WASM after `npm ci`.
 - 2026-09-04 — Conjectured: hide/show stall needs lifted WebSocket attachment. Refuted by: headed `thr_fgn2njixb7` remount with cached WASM and immediate prompt. Learned: remount ≠ user-visible reconnect cost on 0.41. Criterion now: PERF-03 stays killed, not an ISC.
 - 2026-09-04 — Conjectured: frame-level resize forwarding was harmless. Refuted by: WebSocket instrumentation observed intermediate 74x31 then 127x31 PTY sizes during one maximize animation. Learned: the local grid may follow animation frames, but full-screen TUIs need one settled SIGWINCH; hidden sizes must cancel pending delivery without marking it complete.
+- 2026-09-04 — Conjectured: slow Herdr menu clicks came from Wterm's pointer handler or synchronous renderer work. Refuted by: SGR send in ≤2.9ms, first PTY response around 18ms, ≤0.7ms per incoming chunk, no click long tasks. Learned: preserve the downstream ~100ms redraw as a separate fact; fix the observable protocol gap where DEC 1003 hover produced no input at all.
 
 ## Verification
 
@@ -289,3 +306,5 @@ blank region.
 - ISC-35: rg on ts/tsx/js found no sibling BB workspace imports (2026-09-04).
 - ISC-36/37/38/42: headed BB web 2026-09-04 07:46Z, plugin 0.3.16 via `bb plugin dev` on <http://127.0.0.1:38896> thread `thr_fgn2njixb7`. First tab `term_7d8wrt626z` Ghostty with existing scrollback (agent-browser TUI). Open new tab → Wterm created `term_3gwkt6m52p` (created_at 1788508010144, updated +398ms, status running); KV `thread-terminals:thr_fgn2njixb7` holds both ids; second tab paints a fresh starship prompt `0.3.16` with no first-tab scrollback. Remount second tab: `unavail=[]`, no “no longer available”, Ghostty content without empty wait. Loading CSS remains `.wterm-renderer--loading { background: var(--term-bg, #1e1e1e) }` (WASM already cached so skeleton not screenshotable). `npm test` 13 files / 97 pass same commit.
 - ISC-44/45/46: BWT-4 attachment reproduced in headed Chromium on <http://127.0.0.1:38896> thread `thr_fgn2njixb7`. Before fix, maximize emitted intermediate PTY sizes 74x31 and 127x31; final bundle `f16766173b42ef1f` emits one 61x31 on restore and one 128x31 on maximize, with Herdr filling the surface and no stale/blank strip. `wterm-renderer.test.ts` 11/11; full suite 13 files / 98 tests; `npm run build`; browser console/page errors and 4xx/5xx empty. BWT-4 attachment `01M1P65D7W4RXA0DQ2VYXQHP8Y`; status `in_review` (2026-09-04).
+- ISC-47/48/50: red-green tests cover fragmented 1003, explicit disable, direct switch to 1002, SGR code/modifiers/one-based coordinates, same-cell dedupe, button-held and Shift exclusions. `npm test`: 13 files / 102 tests; `npm run build`; `git diff --check` clean (2026-09-04).
+- ISC-49: headed Chromium on <http://127.0.0.1:38896> thread `thr_svxmvyshea` after plugin reload. Herdr click emitted `<ESC>[<35;8;5M` before `<ESC>[<0;8;5M` press and `<ESC>[<0;8;5m` release. Ten synthetic mousemoves inside one cell emitted exactly one `<ESC>[<35;11;6M`; browser console/page errors and captured 4xx/5xx were empty. Screenshot: `/home/ubuntu/.bb/pi-bridge-sessions/thr_svxmvyshea/wterm-herdr-1003-smoke.png` (2026-09-04).

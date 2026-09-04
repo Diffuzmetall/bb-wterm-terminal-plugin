@@ -35,6 +35,10 @@ export const GHOSTTY_WASM_URL = `/api/v1/plugins/${PLUGIN_ID}/http/ghostty-vt.wa
 export const NERD_FONT_URL = `/api/v1/plugins/${PLUGIN_ID}/http/symbols-nerd-font-mono-v3.5.0.woff2`;
 export const NERD_FONT_FAMILY = "Wterm Symbols Nerd Font Mono";
 const nerdFontLoads = new WeakMap<object, Promise<void>>();
+const anyEventMouseModes = new WeakMap<
+  object,
+  { enabled: boolean; generation: number }
+>();
 const MIN_USABLE_TERMINAL_CELLS = 2;
 const TERMINAL_RESIZE_SETTLE_MS = 250;
 
@@ -74,6 +78,42 @@ export function computeFollowBottom(element: {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
 }
 
+export function getAnyEventMouseModeState(core: object): {
+  enabled: boolean;
+  generation: number;
+} {
+  return anyEventMouseModes.get(core) ?? { enabled: false, generation: 0 };
+}
+
+export function encodeAnyEventMouseMove({
+  active,
+  altKey,
+  buttons,
+  cell,
+  ctrlKey,
+  previous,
+  shiftKey,
+}: {
+  active: boolean;
+  altKey: boolean;
+  buttons: number;
+  cell: GridPoint;
+  ctrlKey: boolean;
+  previous: GridPoint | null;
+  shiftKey: boolean;
+}): string | null {
+  if (
+    !active ||
+    buttons !== 0 ||
+    shiftKey ||
+    (previous?.col === cell.col && previous.row === cell.row)
+  ) {
+    return null;
+  }
+  const modifiers = (altKey ? 8 : 0) | (ctrlKey ? 16 : 0);
+  return `\x1b[<${35 | modifiers};${cell.col + 1};${cell.row + 1}M`;
+}
+
 /**
  * Ghostty WASM 0.4.0 still discards mode 1003 before `mouseTracking()` can
  * expose it. Track that one DEC mode at the write boundary, then let Wterm DOM
@@ -91,24 +131,47 @@ export function supportAnyEventMouseMode(core: GhosttyCore): GhosttyCore {
   // async write when the browser refuses a script-initiated copy.
   const osc52 = new Osc52ClipboardFilter(copyTextToClipboard);
   let anyEventMouse = false;
+  let anyEventGeneration = 0;
   let controlTail = "";
   let initialized = false;
+  anyEventMouseModes.set(core, {
+    enabled: anyEventMouse,
+    generation: anyEventGeneration,
+  });
 
   const observeMouseMode = (text: string) => {
     const control = controlTail + text;
+    let nextAnyEventMouse = anyEventMouse;
     for (const match of control.matchAll(/\x1b\[\?([0-9;]*)([hl])/g)) {
       const modes = match[1]?.split(";") ?? [];
-      if (modes.includes("1003")) {
-        anyEventMouse = match[2] === "h";
+      for (const mode of modes) {
+        if (
+          match[2] === "h" &&
+          (mode === "9" ||
+            mode === "1000" ||
+            mode === "1001" ||
+            mode === "1002" ||
+            mode === "1003")
+        ) {
+          nextAnyEventMouse = mode === "1003";
+        } else if (match[2] === "l" && mode === "1003") {
+          nextAnyEventMouse = false;
+        }
+        if (
+          match[2] === "l" &&
+          (mode === "47" || mode === "1047" || mode === "1049")
+        ) {
+          nextAnyEventMouse = false;
+        }
       }
-      if (
-        match[2] === "l" &&
-        modes.some(
-          (mode) => mode === "47" || mode === "1047" || mode === "1049",
-        )
-      ) {
-        anyEventMouse = false;
-      }
+    }
+    if (nextAnyEventMouse !== anyEventMouse) {
+      anyEventMouse = nextAnyEventMouse;
+      anyEventGeneration += 1;
+      anyEventMouseModes.set(core, {
+        enabled: anyEventMouse,
+        generation: anyEventGeneration,
+      });
     }
     controlTail = control.slice(-64);
   };
@@ -337,6 +400,9 @@ export function WtermRenderer({
     layout: CellLayout;
     start: GridPoint;
   } | null>(null);
+  const anyEventLayoutRef = useRef<CellLayout | null>(null);
+  const anyEventModeGenerationRef = useRef(-1);
+  const lastAnyEventCellRef = useRef<GridPoint | null>(null);
   const followBottomRef = useRef(true);
   const followScrollCleanupRef = useRef<(() => void) | null>(null);
   const terminalFontStyle: TerminalFontStyle = {
@@ -387,6 +453,8 @@ export function WtermRenderer({
 
   useEffect(() => {
     if (!readyRef.current) return;
+    anyEventLayoutRef.current = null;
+    lastAnyEventCellRef.current = null;
     const shouldRestoreBottom = followBottomRef.current;
     let settleFrame: number | null = null;
     const frame = window.requestAnimationFrame(() => {
@@ -500,6 +568,44 @@ export function WtermRenderer({
     [],
   );
 
+  const handleAnyEventMouseMove = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      const instance = terminalRef.current?.instance;
+      const bridge = instance?.bridge;
+      if (!instance || !bridge) return;
+      const mode = getAnyEventMouseModeState(bridge);
+      if (anyEventModeGenerationRef.current !== mode.generation) {
+        anyEventModeGenerationRef.current = mode.generation;
+        lastAnyEventCellRef.current = null;
+      }
+      if (!mode.enabled || !bridge.mouseSgr?.()) return;
+
+      const layout =
+        anyEventLayoutRef.current ??
+        terminalCellLayout(instance as unknown as WtermFontMetricsBoundary);
+      anyEventLayoutRef.current = layout;
+      if (!layout) return;
+      const cell = cellAtPoint(layout, event.clientX, event.clientY);
+      if (!cell) {
+        lastAnyEventCellRef.current = null;
+        return;
+      }
+      const data = encodeAnyEventMouseMove({
+        active: mode.enabled,
+        altKey: event.altKey,
+        buttons: event.buttons,
+        cell,
+        ctrlKey: event.ctrlKey,
+        previous: lastAnyEventCellRef.current,
+        shiftKey: event.shiftKey,
+      });
+      if (!data) return;
+      lastAnyEventCellRef.current = cell;
+      attachment.sendInput(new TextEncoder().encode(data));
+    },
+    [attachment],
+  );
+
   const flushPendingWrites = useCallback(() => {
     if (writesOpenRef.current) return;
     writesOpenRef.current = true;
@@ -517,6 +623,9 @@ export function WtermRenderer({
     setReady(true);
     const instance = terminalRef.current?.instance;
     if (!instance) return;
+    anyEventLayoutRef.current = terminalCellLayout(
+      instance as unknown as WtermFontMetricsBoundary,
+    );
     followScrollCleanupRef.current?.();
     const scroller = instance.element;
     if (scroller) {
@@ -548,6 +657,8 @@ export function WtermRenderer({
 
   const handleResize = useCallback(
     (cols: number, rows: number) => {
+      anyEventLayoutRef.current = null;
+      lastAnyEventCellRef.current = null;
       const element = terminalRef.current?.instance?.element;
       if (
         !shouldApplyTerminalResize(
@@ -648,6 +759,10 @@ export function WtermRenderer({
       onResize={handleResize}
       onMouseDown={handleMouseDown}
       onMouseDownCapture={handleTuiCopyDragStart}
+      onMouseMoveCapture={handleAnyEventMouseMove}
+      onMouseLeave={() => {
+        lastAnyEventCellRef.current = null;
+      }}
       onWheelCapture={handleWheelCapture}
       style={terminalFontStyle}
       className="wterm-renderer"
