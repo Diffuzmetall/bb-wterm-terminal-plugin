@@ -11,6 +11,9 @@ This repository is an early public preview. The plugin ID is
 `wterm-terminal-preview`, so it can coexist with BB's bundled
 `wterm-terminal` while the integration is evaluated.
 
+The current release is `v0.3.18`. It includes a copy-selection fix for both
+normal shells and TUI sessions.
+
 ## Features
 
 - Ghostty terminal emulation through `@wterm/ghostty` 0.4.0 and WebAssembly.
@@ -24,8 +27,8 @@ This repository is an early public preview. The plugin ID is
 - Select and restart existing thread-scoped BB terminal sessions when needed.
 - Keyboard, resize, wheel, click, and button-drag mouse input for terminal UIs.
 - Persistent font size controls from 10px to 24px.
-- Native text selection contained inside the terminal and copied on selection.
-- OSC 52 clipboard writes from TUIs such as Herdr, plus copy-on-drag while mouse tracking is enabled. Copy uses a synchronous clipboard write during the pointer gesture so it still works when async clipboard permission is missing.
+- Native, character-level text selection contained inside the terminal and copied on selection. The copy event is scoped to the terminal, so surrounding BB message rows are never included.
+- OSC 52 clipboard writes from TUIs such as Herdr, plus cell-based copy-on-drag while mouse tracking is enabled. Copy uses a synchronous clipboard write during the pointer gesture so it still works when async clipboard permission is missing.
 - File upload by button or drag-and-drop, plus image upload from the clipboard.
 - Files are written on the terminal host and their quoted path is inserted at
   the prompt using bracketed paste.
@@ -45,7 +48,7 @@ This repository is an early public preview. The plugin ID is
 Install the pinned release:
 
 ```sh
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.17' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.18' --yes
 bb plugin source wterm-terminal-preview
 ```
 
@@ -67,7 +70,7 @@ installed release explicitly:
 
 ```sh
 bb plugin remove wterm-terminal-preview
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.17' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.18' --yes
 bb plugin source wterm-terminal-preview
 ```
 
@@ -92,8 +95,8 @@ remove-and-install sequence above.
 
 - Use the `-` and `+` toolbar buttons to change the terminal font size. The
   setting is remembered in the browser.
-- In a normal shell, drag to select text. The completed selection is copied even if the drag ends outside the grid.
-- When a TUI such as Herdr has enabled mouse tracking, click and drag are sent to the TUI. Dragging across cells also copies the highlighted text immediately.
+- In a normal shell, drag across characters to select text. The completed selection is copied even if the drag ends outside the grid, without copying surrounding BB rows.
+- When a TUI such as Herdr has enabled mouse tracking, click and drag are sent to the TUI. Dragging across cells copies the selected cell text immediately; it does not copy whole rendered rows.
   Hold `Shift` while dragging to use browser-native selection instead.
 - OSC 52 clipboard writes from the TUI (Herdr copy-on-select, Vim `y`, and similar) are applied to the system clipboard during the next terminal click if the browser blocked the original write. Clipboard queries are ignored.
 
@@ -163,6 +166,10 @@ workspace.
 The build produces the frontend and server bundles in `dist/` and copies
 `ghostty-vt.wasm` and the bundled Nerd Font from the repository. Generated
 dependencies and build output are intentionally not committed.
+
+## About Contributions
+
+*About Contributions:* Please don't take this the wrong way, but I do not accept outside contributions for any of my projects. I simply don't have the mental bandwidth to review anything, and it's my name on the thing, so I'm responsible for any problems it causes; thus, the risk-reward is highly asymmetric from my perspective. I'd also have to worry about other "stakeholders," which seems unwise for tools I mostly make for myself for free. Feel free to submit issues, and even PRs if you want to illustrate a proposed fix, but know I won't merge them directly. Instead, I'll have Claude or Codex review submissions via `gh` and independently decide whether and how to address them. Bug reports in particular are welcome. Sorry if this offends, but I want to avoid wasted time and hurt feelings. I understand this isn't in sync with the prevailing open-source ethos that seeks community contributions, but it's the only way I can move at this velocity and keep my sanity.
 
 ## License
 
