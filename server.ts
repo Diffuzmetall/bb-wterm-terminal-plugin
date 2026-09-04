@@ -4,6 +4,13 @@ import { readFile } from "node:fs/promises";
 import { posix as path } from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
 import { z } from "zod";
+import {
+	nextLinkedRecords,
+	nextLinkedTerminalIds,
+	parseLinkedRecords,
+	reconcileLinkedRecords,
+	type LinkedTerminalRecord,
+} from "./linked-terminal-records.js";
 
 export const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MAX_FILE_UPLOAD_BYTES = 25 * 1024 * 1024;
@@ -57,10 +64,7 @@ type Session = z.infer<typeof session>;
 
 function bundledAssetUrl(fileName: string, moduleUrl: string): URL {
 	const builtModule = new URL(".", moduleUrl).pathname.endsWith("/dist/");
-	return new URL(
-		`${builtModule ? "../" : "./"}${fileName}`,
-		moduleUrl,
-	);
+	return new URL(`${builtModule ? "../" : "./"}${fileName}`, moduleUrl);
 }
 
 export function bundledWasmUrl(moduleUrl = import.meta.url): URL {
@@ -85,9 +89,7 @@ class UploadError extends Error {
 }
 
 function uploadLimit(fileName: string, mime: string): number {
-	const extension = /\.([A-Za-z0-9]{1,10})$/u
-		.exec(fileName)?.[1]
-		?.toLowerCase();
+	const extension = /\.([A-Za-z0-9]{1,10})$/u.exec(fileName)?.[1]?.toLowerCase();
 	return mime.toLowerCase().startsWith("image/") ||
 		(extension !== undefined && IMAGE_EXTENSIONS.has(extension))
 		? MAX_IMAGE_UPLOAD_BYTES
@@ -129,10 +131,7 @@ export async function readBoundedUploadBody(
 	if (declaredHeader !== null) {
 		const declaredLength = Number(declaredHeader);
 		if (!Number.isFinite(declaredLength) || declaredLength < 0) {
-			throw new UploadError(
-				400,
-				"content-length must be a non-negative number",
-			);
+			throw new UploadError(400, "content-length must be a non-negative number");
 		}
 		if (declaredLength > limit) {
 			throw new UploadError(413, `upload exceeds the ${limit} byte limit`);
@@ -172,25 +171,44 @@ export async function readBoundedUploadBody(
 
 const terminalLinkWrites = new Map<string, Promise<void>>();
 
-async function linkedTerminalIds(
-	bb: BbPluginApi,
-	threadId: string,
-): Promise<string[]> {
-	return (await bb.storage.kv.get<string[]>(terminalLinksKey(threadId))) ?? [];
+export function createBytesCache(
+	read: () => Promise<Uint8Array | Buffer>,
+): () => Promise<Uint8Array> {
+	let cache: Promise<Uint8Array> | Uint8Array | null = null;
+	return async () => {
+		if (cache instanceof Uint8Array) return cache;
+		if (cache) return cache;
+		const pending = Promise.resolve(read()).then((bytes) => {
+			const copy = new Uint8Array(bytes);
+			cache = copy;
+			return copy;
+		});
+		cache = pending;
+		return pending;
+	};
 }
 
-async function saveLinkedTerminalIds(
+async function linkedTerminalRecords(
 	bb: BbPluginApi,
 	threadId: string,
-	terminalIds: readonly string[],
+): Promise<LinkedTerminalRecord[]> {
+	return parseLinkedRecords(await bb.storage.kv.get(terminalLinksKey(threadId)));
+}
+
+async function saveLinkedTerminalRecords(
+	bb: BbPluginApi,
+	threadId: string,
+	records: readonly LinkedTerminalRecord[],
 ): Promise<void> {
-	await bb.storage.kv.set(terminalLinksKey(threadId), [...new Set(terminalIds)]);
+	const unique = new Map<string, LinkedTerminalRecord>();
+	for (const record of records) unique.set(record.id, record);
+	await bb.storage.kv.set(terminalLinksKey(threadId), [...unique.values()]);
 }
 
 async function withLinkedTerminalIds<Value>(
 	bb: BbPluginApi,
 	threadId: string,
-	update: (current: string[]) => Promise<Value>,
+	update: (current: LinkedTerminalRecord[]) => Promise<Value>,
 ): Promise<Value> {
 	const key = terminalLinksKey(threadId);
 	const previous = terminalLinkWrites.get(key) ?? Promise.resolve();
@@ -202,7 +220,7 @@ async function withLinkedTerminalIds<Value>(
 	terminalLinkWrites.set(key, queued);
 	await previous;
 	try {
-		return await update(await linkedTerminalIds(bb, threadId));
+		return await update(await linkedTerminalRecords(bb, threadId));
 	} finally {
 		release();
 		if (terminalLinkWrites.get(key) === queued) terminalLinkWrites.delete(key);
@@ -215,53 +233,61 @@ async function rememberLinkedTerminal(
 	terminalId: string,
 ): Promise<void> {
 	await withLinkedTerminalIds(bb, threadId, async (current) => {
-		await saveLinkedTerminalIds(bb, threadId, [...current, terminalId]);
+		await saveLinkedTerminalRecords(bb, threadId, [
+			...current,
+			{ id: terminalId, firstUnavailableAt: null },
+		]);
 	});
 }
 
-export function nextLinkedTerminalIds(
-	linkedIds: readonly string[],
-	results: readonly PromiseSettledResult<{ id: string }>[],
-): string[] {
-	return linkedIds.flatMap((id, index) => {
-		const result = results[index];
-		if (!result) return [id];
-		if (result.status === "fulfilled") return [result.value.id];
-		return [id];
-	});
-}
+export { nextLinkedTerminalIds };
 
 function unavailableLinkedSession(terminalId: string): Session {
 	return {
 		id: terminalId,
 		title: "Wterm terminal",
 		initialCwd: null,
-		status: "running",
+		status: "unavailable",
 		updatedAt: 0,
 		lastUserInputAt: null,
 	};
 }
 
 async function loadLinkedTerminals(bb: BbPluginApi, threadId: string) {
-	return withLinkedTerminalIds(bb, threadId, async (linkedIds) => {
-		const linkedResults = await Promise.allSettled(
-			linkedIds.map((terminalId) => bb.sdk.terminals.get({ terminalId })),
+	const linkedRecords = await linkedTerminalRecords(bb, threadId);
+	const linkedResults = await Promise.allSettled(
+		linkedRecords.map((record) =>
+			bb.sdk.terminals.get({ terminalId: record.id }),
+		),
+	);
+	const now = Date.now();
+	const nextRecords = nextLinkedRecords(linkedRecords, linkedResults, now);
+	const changed =
+		nextRecords.length !== linkedRecords.length ||
+		nextRecords.some(
+			(record, index) =>
+				record.id !== linkedRecords[index]?.id ||
+				record.firstUnavailableAt !== linkedRecords[index]?.firstUnavailableAt,
 		);
-		const nextIds = nextLinkedTerminalIds(linkedIds, linkedResults);
-		if (
-			nextIds.length !== linkedIds.length ||
-			nextIds.some((id, index) => id !== linkedIds[index])
-		) {
-			await saveLinkedTerminalIds(bb, threadId, nextIds);
-		}
-		const sessions = linkedResults.flatMap((result) =>
-			result.status === "fulfilled" ? [result.value] : [],
-		);
-		const unavailableIds = linkedIds.filter(
-			(_, index) => linkedResults[index]?.status === "rejected",
-		);
-		return { sessions, unavailableIds };
-	});
+	if (changed) {
+		void withLinkedTerminalIds(bb, threadId, async (current) => {
+			await saveLinkedTerminalRecords(
+				bb,
+				threadId,
+				reconcileLinkedRecords(current, linkedRecords, linkedResults, now),
+			);
+		}).catch(() => undefined);
+	}
+	const sessions = linkedResults.flatMap((result) =>
+		result.status === "fulfilled" ? [result.value] : [],
+	);
+	const unavailableIds = nextRecords
+		.filter((record) => {
+			const index = linkedRecords.findIndex((item) => item.id === record.id);
+			return linkedResults[index]?.status === "rejected";
+		})
+		.map((record) => record.id);
+	return { sessions, unavailableIds };
 }
 
 async function sessionsForThread(bb: BbPluginApi, threadId: string) {
@@ -269,9 +295,14 @@ async function sessionsForThread(bb: BbPluginApi, threadId: string) {
 		bb.sdk.terminals.list({ scope: legacyScope(threadId) }),
 		loadLinkedTerminals(bb, threadId),
 	]);
-	return [...new Map(
-		[...legacy.sessions, ...linked.sessions].map((terminal) => [terminal.id, terminal]),
-	).values()];
+	return [
+		...new Map(
+			[...legacy.sessions, ...linked.sessions].map((terminal) => [
+				terminal.id,
+				terminal,
+			]),
+		).values(),
+	];
 }
 
 async function listedSessionsForThread(bb: BbPluginApi, threadId: string) {
@@ -280,11 +311,15 @@ async function listedSessionsForThread(bb: BbPluginApi, threadId: string) {
 		loadLinkedTerminals(bb, threadId),
 	]);
 	const unavailable = linked.unavailableIds.map(unavailableLinkedSession);
-	return [...new Map(
-		[...legacy.sessions.map(mapSession), ...linked.sessions.map(mapSession), ...unavailable].map(
-			(terminal) => [terminal.id, terminal],
-		),
-	).values()];
+	return [
+		...new Map(
+			[
+				...legacy.sessions.map(mapSession),
+				...linked.sessions.map(mapSession),
+				...unavailable,
+			].map((terminal) => [terminal.id, terminal]),
+		).values(),
+	];
 }
 
 async function handleUpload(
@@ -295,8 +330,7 @@ async function handleUpload(
 		const threadId = requiredQuery(context, "threadId");
 		const terminalId = requiredQuery(context, "terminalId");
 		const fileName = requiredQuery(context, "fileName");
-		const mime =
-			context.req.query("mime")?.trim() || "application/octet-stream";
+		const mime = context.req.query("mime")?.trim() || "application/octet-stream";
 		const sessions = await sessionsForThread(bb, threadId);
 		const terminal = sessions.find((item) => item.id === terminalId);
 		if (!terminal) {
@@ -363,6 +397,7 @@ function mapSession(value: {
 }
 
 let ghosttyWasmCache: Promise<Uint8Array> | Uint8Array | null = null;
+const nerdFontBytes = createBytesCache(() => readFile(bundledNerdFontUrl()));
 
 async function ghosttyWasmBytes(): Promise<Uint8Array> {
 	if (ghosttyWasmCache instanceof Uint8Array) return ghosttyWasmCache;
@@ -404,12 +439,16 @@ export default function plugin(bb: BbPluginApi) {
 			if (!sessions.some((item) => item.id === terminalId))
 				throw new Error("Terminal is not in the requested thread");
 			const replacement = await bb.sdk.terminals.restart({ terminalId });
-			await withLinkedTerminalIds(bb, threadId, async (linkedIds) => {
-				if (!linkedIds.includes(terminalId)) return;
-				await saveLinkedTerminalIds(
+			await withLinkedTerminalIds(bb, threadId, async (linkedRecords) => {
+				if (!linkedRecords.some((record) => record.id === terminalId)) return;
+				await saveLinkedTerminalRecords(
 					bb,
 					threadId,
-					linkedIds.map((id) => (id === terminalId ? replacement.id : id)),
+					linkedRecords.map((record) =>
+						record.id === terminalId
+							? { id: replacement.id, firstUnavailableAt: null }
+							: record,
+					),
 				);
 			});
 			return mapSession(replacement);
@@ -434,16 +473,13 @@ export default function plugin(bb: BbPluginApi) {
 		"GET",
 		NERD_FONT_PATH,
 		async () =>
-			new Response(
-				await readFile(bundledNerdFontUrl()),
-				{
-					headers: {
-						"cache-control": "public, max-age=31536000, immutable",
-						"content-type": "font/woff2",
-						"x-content-type-options": "nosniff",
-					},
+			new Response(await nerdFontBytes(), {
+				headers: {
+					"cache-control": "public, max-age=31536000, immutable",
+					"content-type": "font/woff2",
+					"x-content-type-options": "nosniff",
 				},
-			),
+			}),
 		{ auth: "token" },
 	);
 }

@@ -25,3 +25,21 @@
   height: 1rem;
   width: 1rem;
 }
+
+.wterm-picker-skeleton {
+  min-height: 4.5rem;
+  border-radius: 0.5rem;
+  background: color-mix(in oklch, var(--ink, #111) 10%, var(--canvas, #1e1e1e));
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .wterm-picker-skeleton {
+    animation: wterm-picker-pulse 1.2s ease-in-out infinite;
+  }
+}
+
+@keyframes wterm-picker-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}

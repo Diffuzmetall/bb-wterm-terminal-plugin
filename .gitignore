@@ -5,3 +5,10 @@ node_modules/
 .env.*
 *.log
 pnpm-lock.yaml
+
+# bv (beads viewer) local config and caches
+.bv/
+.logs/
+.bb-wterm-uploads/
+.pi/
+.codegraph/

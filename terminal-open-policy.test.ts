@@ -74,10 +74,17 @@ describe("evaluateTerminalPresence", () => {
         sessions: null,
         terminalId: "term-running",
       }),
+    ).toBe("retry");
+    expect(
+      evaluateTerminalPresence({
+        attempt: 6,
+        sessions: null,
+        terminalId: "term-running",
+      }),
     ).toBe("ready");
   });
 
-  it("retries a missing id a few times before treating it as gone", () => {
+  it("retries a missing id during grace and until maxAttempts", () => {
     expect(
       evaluateTerminalPresence({
         attempt: 1,
@@ -87,7 +94,21 @@ describe("evaluateTerminalPresence", () => {
     ).toBe("retry");
     expect(
       evaluateTerminalPresence({
-        attempt: 3,
+        attempt: 2,
+        sessions,
+        terminalId: "term-missing",
+      }),
+    ).toBe("retry");
+    expect(
+      evaluateTerminalPresence({
+        attempt: 5,
+        sessions,
+        terminalId: "term-missing",
+      }),
+    ).toBe("retry");
+    expect(
+      evaluateTerminalPresence({
+        attempt: 6,
         sessions,
         terminalId: "term-missing",
       }),
@@ -100,6 +121,16 @@ describe("evaluateTerminalPresence", () => {
         attempt: 1,
         sessions,
         terminalId: "term-exited",
+      }),
+    ).toBe("missing");
+  });
+
+  it("treats unavailable synthetic sessions as missing immediately", () => {
+    expect(
+      evaluateTerminalPresence({
+        attempt: 1,
+        sessions: [{ id: "term-zombie", status: "unavailable" }],
+        terminalId: "term-zombie",
       }),
     ).toBe("missing");
   });

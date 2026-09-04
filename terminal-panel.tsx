@@ -13,10 +13,8 @@ import {
   useLegacyTerminalAttachment,
   type TerminalAttachment,
 } from "./terminal-attachment.js";
-import {
-  preloadTerminalAssets,
-  TerminalRenderer,
-} from "./wterm-renderer.js";
+import { preloadTerminalAssets, TerminalRenderer } from "./wterm-renderer.js";
+import { PLUGIN_ID, getPluginToken } from "./plugin-token.js";
 
 export const preloadTerminalPanel = preloadTerminalAssets;
 
@@ -26,7 +24,6 @@ const DEFAULT_TERMINAL_FONT_SIZE = 14;
 const MIN_TERMINAL_FONT_SIZE = 10;
 const MAX_TERMINAL_FONT_SIZE = 24;
 const TERMINAL_FONT_SIZE_STORAGE_KEY = "wterm-terminal-font-size";
-const PLUGIN_ID = "wterm-terminal-preview";
 const IMAGE_EXTENSIONS = new Set([
   "avif",
   "gif",
@@ -73,26 +70,6 @@ function errorMessage(value: unknown, fallback: string): string {
     : fallback;
 }
 
-async function pluginToken(signal: AbortSignal): Promise<string> {
-  const response = await fetch(`/api/v1/plugins/${PLUGIN_ID}/token`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: "{}",
-    signal,
-  });
-  const json: unknown = await response.json().catch(() => null);
-  const token =
-    json && typeof json === "object" && "token" in json
-      ? (json as { token: unknown }).token
-      : undefined;
-  if (!response.ok || typeof token !== "string") {
-    throw new Error(
-      errorMessage(json, `token request failed (HTTP ${response.status})`),
-    );
-  }
-  return token;
-}
-
 export async function uploadTerminalFile({
   file,
   signal,
@@ -115,7 +92,7 @@ export async function uploadTerminalFile({
   if (file.size > limit) {
     throw new Error(`File exceeds the ${limit} byte limit`);
   }
-  const token = await pluginToken(signal);
+  const token = await getPluginToken();
   const query = new URLSearchParams({
     threadId,
     terminalId,

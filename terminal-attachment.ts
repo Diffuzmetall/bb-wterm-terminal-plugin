@@ -46,7 +46,7 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
   private readonly pendingBeforeSubscribe: TerminalAttachmentChunk[] = [];
   private readonly pendingInputs: string[] = [];
   private readonly pendingLive = new Map<number, OutputChunk>();
-  private readonly pendingReplay = new Map<number, OutputChunk>();
+  private pendingReplay: OutputChunk[] = [];
   private pendingResize: string | null = null;
   private socket: WebSocket | null = null;
 
@@ -63,7 +63,7 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
     this.attachedNextSeq = null;
     this.pendingBeforeAttach.clear();
     this.pendingLive.clear();
-    this.pendingReplay.clear();
+    this.pendingReplay = [];
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const endpoint = `${protocol}//${window.location.host}/ws/terminals/${encodeURIComponent(this.terminalId)}`;
     const socket = new WebSocket(endpoint);
@@ -99,10 +99,13 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
   sendResize(cols: number, rows: number): boolean {
     if (!Number.isSafeInteger(cols) || cols <= 0) return false;
     if (!Number.isSafeInteger(rows) || rows <= 0) return false;
-    if (cols === this.lastResizeCols && rows === this.lastResizeRows) return true;
+    if (cols === this.lastResizeCols && rows === this.lastResizeRows)
+      return true;
     this.lastResizeCols = cols;
     this.lastResizeRows = rows;
-    return this.sendResizeMessage(JSON.stringify({ type: "resize", cols, rows }));
+    return this.sendResizeMessage(
+      JSON.stringify({ type: "resize", cols, rows }),
+    );
   }
 
   detach(): void {
@@ -125,7 +128,7 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
     this.pendingBeforeSubscribe.length = 0;
     this.pendingInputs.length = 0;
     this.pendingLive.clear();
-    this.pendingReplay.clear();
+    this.pendingReplay = [];
     this.pendingResize = null;
   }
 
@@ -147,7 +150,7 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
       return;
     }
     if (message.chunk.seq < this.attachedNextSeq) {
-      this.pendingReplay.set(message.chunk.seq, message.chunk);
+      this.insertReplay(message.chunk);
       this.flushWhenReplayComplete();
       return;
     }
@@ -161,17 +164,29 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
     this.deliver(message.chunk);
   }
 
+  private insertReplay(chunk: OutputChunk): void {
+    if (this.pendingReplay.some((pending) => pending.seq === chunk.seq)) return;
+    let index = 0;
+    while (
+      index < this.pendingReplay.length &&
+      this.pendingReplay[index]!.seq < chunk.seq
+    ) {
+      index += 1;
+    }
+    this.pendingReplay.splice(index, 0, chunk);
+  }
+
   private flushWhenReplayComplete(): void {
     if (this.attachedNextSeq === null) return;
     const replayCaughtUp =
       this.attachedNextSeq === 0 ||
       this.lastDeliveredSeq >= this.attachedNextSeq - 1 ||
-      this.pendingReplay.has(this.attachedNextSeq - 1);
+      this.pendingReplay.some(
+        (chunk) => chunk.seq === this.attachedNextSeq! - 1,
+      );
     if (!replayCaughtUp) return;
-    const replay = [...this.pendingReplay.values()].sort(
-      (left, right) => left.seq - right.seq,
-    );
-    this.pendingReplay.clear();
+    const replay = this.pendingReplay;
+    this.pendingReplay = [];
     for (const chunk of replay) this.deliver(chunk);
     const live = [...this.pendingLive.values()].sort(
       (left, right) => left.seq - right.seq,
@@ -191,7 +206,10 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
     for (const listener of this.listeners) listener(decoded);
   }
 
-  private queueWhileSocketSettles(kind: "input" | "resize", message: string): boolean {
+  private queueWhileSocketSettles(
+    kind: "input" | "resize",
+    message: string,
+  ): boolean {
     if (kind === "resize") this.pendingResize = message;
     else this.pendingInputs.push(message);
     if (this.socket === null) this.connect();
@@ -261,7 +279,9 @@ export function useLegacyTerminalAttachment(
   return attachment;
 }
 
-function parseTerminalServerMessage(raw: unknown): TerminalServerMessage | null {
+function parseTerminalServerMessage(
+  raw: unknown,
+): TerminalServerMessage | null {
   if (typeof raw !== "string") return null;
   let value: unknown;
   try {
@@ -278,7 +298,11 @@ function parseTerminalServerMessage(raw: unknown): TerminalServerMessage | null 
   ) {
     return { type: "attached", nextSeq: Number(record.nextSeq) };
   }
-  if (record.type !== "output" || !record.chunk || typeof record.chunk !== "object") {
+  if (
+    record.type !== "output" ||
+    !record.chunk ||
+    typeof record.chunk !== "object"
+  ) {
     return null;
   }
   const chunk = record.chunk as Record<string, unknown>;
@@ -296,9 +320,11 @@ function parseTerminalServerMessage(raw: unknown): TerminalServerMessage | null 
 }
 
 export function decodeBase64(value: string): Uint8Array {
-  const fromBase64 = (Uint8Array as unknown as {
-    fromBase64?: (input: string) => Uint8Array;
-  }).fromBase64;
+  const fromBase64 = (
+    Uint8Array as unknown as {
+      fromBase64?: (input: string) => Uint8Array;
+    }
+  ).fromBase64;
   if (fromBase64) return fromBase64(value);
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
@@ -308,8 +334,13 @@ export function decodeBase64(value: string): Uint8Array {
   return bytes;
 }
 
-function encodeBase64(bytes: Uint8Array): string {
+export function encodeBase64(bytes: Uint8Array): string {
+  const native = bytes as Uint8Array & { toBase64?: () => string };
+  if (typeof native.toBase64 === "function") return native.toBase64();
+  const CHUNK = 8192;
   let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
   return btoa(binary);
 }

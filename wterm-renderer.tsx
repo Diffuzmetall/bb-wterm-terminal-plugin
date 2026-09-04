@@ -10,8 +10,8 @@ import {
 } from "react";
 import { GhosttyCore } from "@wterm/ghostty";
 import { Terminal, type TerminalHandle } from "@wterm/react";
-import { z } from "zod";
 import type { TerminalAttachment } from "./terminal-attachment.js";
+import { getPluginToken } from "./plugin-token.js";
 import {
   Osc52ClipboardFilter,
   copyTextToClipboard,
@@ -52,12 +52,26 @@ export function isUsableTerminalSize(cols: number, rows: number): boolean {
   );
 }
 
+export function shouldClearSelectionOnWheel(
+  selection: { isCollapsed: boolean } | null,
+): boolean {
+  return Boolean(selection && !selection.isCollapsed);
+}
+
 export function shouldApplyTerminalResize(
   cols: number,
   rows: number,
   hasSize: boolean,
 ): boolean {
   return hasSize && isUsableTerminalSize(cols, rows);
+}
+
+export function computeFollowBottom(element: {
+  clientHeight: number;
+  scrollHeight: number;
+  scrollTop: number;
+}): boolean {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
 }
 
 /**
@@ -142,20 +156,7 @@ export function supportAnyEventMouseMode(core: GhosttyCore): GhosttyCore {
   return core;
 }
 
-const pluginToken = createRetryablePromiseCache(async () => {
-  const response = await fetch(`/api/v1/plugins/${PLUGIN_ID}/token`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: "{}",
-    signal: AbortSignal.timeout(10_000),
-  });
-  const json: unknown = await response.json().catch(() => null);
-  const parsed = z.object({ token: z.string() }).safeParse(json);
-  if (!response.ok || !parsed.success) {
-    throw new Error(`asset token request failed (HTTP ${response.status})`);
-  }
-  return parsed.data.token;
-});
+const pluginToken = getPluginToken;
 
 const ghosttyWasmObjectUrl = createRetryablePromiseCache(async () => {
   const response = await fetch(GHOSTTY_WASM_URL, {
@@ -202,11 +203,10 @@ export async function loadNerdFont(
     if (!response.ok) {
       throw new Error(`font request failed (HTTP ${response.status})`);
     }
-    const face = new FontFace(
-      NERD_FONT_FAMILY,
-      await response.arrayBuffer(),
-      { style: "normal", weight: "400" },
-    );
+    const face = new FontFace(NERD_FONT_FAMILY, await response.arrayBuffer(), {
+      style: "normal",
+      weight: "400",
+    });
     fontFaceSet.add(await face.load());
   })();
   const retryable = pending.catch((error: unknown) => {
@@ -335,9 +335,9 @@ export function WtermRenderer({
     start: GridPoint;
   } | null>(null);
   const followBottomRef = useRef(true);
+  const followScrollCleanupRef = useRef<(() => void) | null>(null);
   const terminalFontStyle: TerminalFontStyle = {
-    "--term-font-family":
-      `Menlo, Consolas, "DejaVu Sans Mono", "Courier New", "${NERD_FONT_FAMILY}", monospace`,
+    "--term-font-family": `Menlo, Consolas, "DejaVu Sans Mono", "Courier New", "${NERD_FONT_FAMILY}", monospace`,
     "--term-font-size": `${fontSizePx}px`,
     "--term-row-height": `${Math.ceil(fontSizePx * 1.2)}px`,
   };
@@ -407,6 +407,7 @@ export function WtermRenderer({
     () => () => {
       clearSelectionBoundaryRef.current?.();
       tuiCopyDragCleanupRef.current?.();
+      followScrollCleanupRef.current?.();
       if (resizeFrameRef.current) {
         window.cancelAnimationFrame(resizeFrameRef.current);
       }
@@ -513,6 +514,18 @@ export function WtermRenderer({
     setReady(true);
     const instance = terminalRef.current?.instance;
     if (!instance) return;
+    followScrollCleanupRef.current?.();
+    const scroller = instance.element;
+    if (scroller) {
+      const onScroll = () => {
+        followBottomRef.current = computeFollowBottom(scroller);
+      };
+      onScroll();
+      scroller.addEventListener("scroll", onScroll, { passive: true });
+      followScrollCleanupRef.current = () => {
+        scroller.removeEventListener("scroll", onScroll);
+      };
+    }
     if (refitTerminalAfterFontChange(instance)) {
       return;
     }
@@ -567,19 +580,15 @@ export function WtermRenderer({
   const handleWheelCapture = useCallback(
     (event: ReactWheelEvent<HTMLDivElement>) => {
       if (clearSelectionBoundaryRef.current) return;
+      const selection = window.getSelection();
+      if (!shouldClearSelectionOnWheel(selection)) return;
       clearTerminalSelection<Node | null>(
         terminalRef.current?.instance?.element ?? event.currentTarget,
-        window.getSelection(),
+        selection,
       );
     },
     [],
   );
-
-  const handleScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
-    const element = event.currentTarget;
-    followBottomRef.current =
-      element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
-  }, []);
 
   if (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -605,9 +614,10 @@ export function WtermRenderer({
   if (!core) {
     return (
       <div
-        className="wterm-renderer"
+        className="wterm-renderer wterm-renderer--loading"
         data-renderer="ghostty"
         aria-busy="true"
+        aria-label="Terminal loading"
       />
     );
   }
@@ -623,7 +633,6 @@ export function WtermRenderer({
       onMouseDown={handleMouseDown}
       onMouseDownCapture={handleTuiCopyDragStart}
       onWheelCapture={handleWheelCapture}
-      onScroll={handleScroll}
       style={terminalFontStyle}
       className="wterm-renderer"
       data-renderer="ghostty"

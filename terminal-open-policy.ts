@@ -3,18 +3,20 @@ export interface TerminalOpenCandidate {
   status: string;
 }
 
-function isActiveStatus(status: string): boolean {
+export function isActiveStatus(status: string): boolean {
   const normalized = status.toLowerCase();
   return normalized === "running" || normalized === "starting";
 }
 
 export function evaluateTerminalPresence({
   attempt,
-  maxAttempts = 3,
+  gracePeriodAttempts = 2,
+  maxAttempts = 6,
   sessions,
   terminalId,
 }: {
   attempt: number;
+  gracePeriodAttempts?: number;
   maxAttempts?: number;
   sessions: readonly TerminalOpenCandidate[] | null;
   terminalId: string;
@@ -23,7 +25,8 @@ export function evaluateTerminalPresence({
   const selected = sessions.find((session) => session.id === terminalId);
   if (selected && isActiveStatus(selected.status)) return "ready";
   if (selected) return "missing";
-  return attempt < maxAttempts ? "retry" : "missing";
+  if (attempt <= gracePeriodAttempts || attempt < maxAttempts) return "retry";
+  return "missing";
 }
 
 export function terminalIdAfterListFailure({

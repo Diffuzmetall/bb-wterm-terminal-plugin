@@ -7,6 +7,7 @@ import plugin, {
   buildUploadPath,
   bundledNerdFontUrl,
   bundledWasmUrl,
+  createBytesCache,
   nextLinkedTerminalIds,
   readBoundedUploadBody,
   wtermRpcContract,
@@ -111,6 +112,29 @@ function createPluginHarness() {
   };
 }
 
+describe("createBytesCache", () => {
+  it("coalesces overlapping reads and serves the stored copy", async () => {
+    let resolveRead: ((value: Uint8Array) => void) | undefined;
+    const read = vi.fn(
+      () =>
+        new Promise<Uint8Array>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+    const cached = createBytesCache(read);
+    const first = cached();
+    const second = cached();
+    expect(read).toHaveBeenCalledOnce();
+    resolveRead?.(new Uint8Array([1, 2, 3]));
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      new Uint8Array([1, 2, 3]),
+      new Uint8Array([1, 2, 3]),
+    ]);
+    await expect(cached()).resolves.toEqual(new Uint8Array([1, 2, 3]));
+    expect(read).toHaveBeenCalledOnce();
+  });
+});
+
 describe("Wterm server boundaries", () => {
   it("registers authenticated upload and renderer asset routes", () => {
     const register = vi.fn();
@@ -170,7 +194,9 @@ describe("Wterm server boundaries", () => {
   });
 
   it("keeps the vendored Ghostty WASM byte-identical to the pinned package", async () => {
-    const vendored = await readFile(new URL("./ghostty-vt.wasm", import.meta.url));
+    const vendored = await readFile(
+      new URL("./ghostty-vt.wasm", import.meta.url),
+    );
     const upstream = await readFile(
       new URL(
         "./node_modules/@wterm/ghostty/wasm/ghostty-vt.wasm",
@@ -236,7 +262,7 @@ describe("Wterm server boundaries", () => {
       title: "Wterm terminal",
     });
     expect(kvSet).toHaveBeenCalledWith("thread-terminals:thread-1", [
-      "term-2",
+      { id: "term-2", firstUnavailableAt: null },
     ]);
 
     list.mockClear();
@@ -328,7 +354,7 @@ describe("Wterm server boundaries", () => {
     expect(get).toHaveBeenCalledWith({ terminalId: linked.id });
     expect(restart).toHaveBeenCalledWith({ terminalId: linked.id });
     expect(kvSet).toHaveBeenCalledWith("thread-terminals:thread-1", [
-      "term-replacement",
+      { id: "term-replacement", firstUnavailableAt: null },
     ]);
   });
 
@@ -358,12 +384,134 @@ describe("Wterm server boundaries", () => {
         id: "term-environment",
         title: "Wterm terminal",
         initialCwd: null,
-        status: "running",
+        status: "unavailable",
         updatedAt: 0,
         lastUserInputAt: null,
       },
     ]);
-    expect(kvSet).not.toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(kvSet).toHaveBeenCalledWith("thread-terminals:thread-1", [
+        {
+          id: "term-environment",
+          firstUnavailableAt: expect.any(Number),
+        },
+      ]);
+    });
+  });
+
+  it("does not hold the linked-id write mutex while listSessions waits on terminals.get", async () => {
+    const register = vi.fn();
+    let rejectGet!: (error: Error) => void;
+    const blockedGet = new Promise<never>((_, reject) => {
+      rejectGet = reject;
+    });
+    const kv = new Map<string, unknown>([
+      ["thread-terminals:thread-1", ["term-old"]],
+    ]);
+    const kvSet = vi.fn(async (key: string, value: unknown) => {
+      kv.set(key, value);
+    });
+    const get = vi.fn().mockImplementation(() => blockedGet);
+    const create = vi.fn().mockResolvedValue({
+      id: "term-new",
+      title: "Wterm terminal",
+      initialCwd: "/tmp",
+      status: "running",
+      updatedAt: 11,
+      lastUserInputAt: null,
+    });
+    const bb = {
+      http: { route: vi.fn() },
+      rpc: { register },
+      storage: {
+        kv: {
+          get: vi.fn(async (key: string) => kv.get(key)),
+          set: kvSet,
+        },
+      },
+      sdk: {
+        threads: {
+          get: vi.fn().mockResolvedValue({ environmentId: "environment-1" }),
+        },
+        terminals: {
+          get,
+          list: vi.fn().mockResolvedValue({ sessions: [] }),
+          create,
+        },
+      },
+    } as never;
+    plugin(bb);
+    const handlers = register.mock.calls[0]?.[1];
+
+    const listing = handlers.listSessions({ threadId: "thread-1" });
+    await vi.waitFor(() => expect(get).toHaveBeenCalled());
+    await expect(
+      handlers.createTerminal({ threadId: "thread-1" }),
+    ).resolves.toMatchObject({ id: "term-new" });
+    expect(kv.get("thread-terminals:thread-1")).toEqual([
+      { id: "term-old", firstUnavailableAt: null },
+      { id: "term-new", firstUnavailableAt: null },
+    ]);
+
+    rejectGet(new Error("timeout"));
+    await expect(listing).resolves.toEqual([
+      {
+        id: "term-old",
+        title: "Wterm terminal",
+        initialCwd: null,
+        status: "unavailable",
+        updatedAt: 0,
+        lastUserInputAt: null,
+      },
+    ]);
+    await vi.waitFor(() => {
+      const stored = kv.get("thread-terminals:thread-1") as {
+        id: string;
+        firstUnavailableAt: number | null;
+      }[];
+      expect(stored.map((record) => record.id)).toEqual([
+        "term-old",
+        "term-new",
+      ]);
+      expect(stored[0]?.firstUnavailableAt).toEqual(expect.any(Number));
+      expect(stored[1]).toEqual({
+        id: "term-new",
+        firstUnavailableAt: null,
+      });
+    });
+  });
+
+  it("does not authorize upload to an unavailable linked terminal", async () => {
+    const register = vi.fn();
+    const route = vi.fn();
+    const write = vi.fn();
+    const bb = {
+      http: { route },
+      rpc: { register },
+      storage: {
+        kv: {
+          get: vi.fn().mockResolvedValue(["term-zombie"]),
+          set: vi.fn().mockResolvedValue(undefined),
+        },
+      },
+      sdk: {
+        files: { write },
+        terminals: {
+          get: vi.fn().mockRejectedValue(new Error("host unavailable")),
+          list: vi.fn().mockResolvedValue({ sessions: [] }),
+        },
+      },
+    } as never;
+    plugin(bb);
+    const upload = route.mock.calls.find(
+      ([method, path]) => method === "POST" && path === "/upload",
+    )?.[2] as (context: unknown) => Promise<Response>;
+
+    const response = await upload(
+      uploadContext({ terminalId: "term-zombie" }),
+    );
+    expect(response.status).toBe(404);
+    expect(write).not.toHaveBeenCalled();
   });
 
   it("does not drop a linked id from a rejected lookup", () => {
@@ -478,11 +626,12 @@ describe("Wterm server boundaries", () => {
       rootPath: "/work",
       uploadPath: "/work/.bb-wterm-uploads/fixed-id.sh",
     });
-    expect(buildUploadPath("/work", "archive.verylongextension", "fixed-id"))
-      .toEqual({
-        rootPath: "/work",
-        uploadPath: "/work/.bb-wterm-uploads/fixed-id",
-      });
+    expect(
+      buildUploadPath("/work", "archive.verylongextension", "fixed-id"),
+    ).toEqual({
+      rootPath: "/work",
+      uploadPath: "/work/.bb-wterm-uploads/fixed-id",
+    });
     expect(() => buildUploadPath("relative", "x.txt", "fixed-id")).toThrow(
       "absolute POSIX path",
     );

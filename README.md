@@ -14,11 +14,13 @@ This repository is an early public preview. The plugin ID is
 ## Features
 
 - Ghostty terminal emulation through `@wterm/ghostty` 0.4.0 and WebAssembly.
-- Composer shortcut: a terminal button in the chat footer opens this thread's Wterm panel. On BB hosts that support `experimental_primarySurface`, chat collapses so the terminal fills the thread; use **Exit Full Screen** to return. Packaged BB 0.40.0 does not include that host API, so the same button opens the side panel or session picker instead.
+- Dark first paint while WASM and the Nerd Font load; leftover TUI colors are not kept on scrollback rows.
+- Composer shortcut: a terminal button in the chat footer. If a Wterm tab is already open in this thread, it reveals that panel. If none is open, it creates a **new** session. On BB hosts that support `experimental_primarySurface`, chat collapses so the terminal fills the thread; use **Exit Full Screen** to return. Packaged BB 0.40.0 does not include that host API, so the same button opens the side panel or session picker instead.
 - Bundled Symbols Nerd Font Mono fallback for Powerline, Starship, and Nerd
   Font prompt icons; no local font installation is required.
-- Every **Wterm terminal** tab starts an independent thread-scoped terminal;
-  opening another tab never reuses or replaces the current session.
+- Every **Wterm terminal** tab starts an independent thread-scoped terminal.
+  **+** / a new tab always creates a new PTY. It never silently reopens the previous session from localStorage. Attach to an existing session only from the picker, by clicking that row.
+- The session picker distinguishes loading, a failed list (with Retry), and an empty list. Dead linked sessions show as unavailable/exited, not as running.
 - Select and restart existing thread-scoped BB terminal sessions when needed.
 - Keyboard, resize, wheel, click, and button-drag mouse input for terminal UIs.
 - Persistent font size controls from 10px to 24px.
@@ -43,7 +45,7 @@ This repository is an early public preview. The plugin ID is
 Install the pinned release:
 
 ```sh
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.16' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.17' --yes
 bb plugin source wterm-terminal-preview
 ```
 
@@ -51,11 +53,12 @@ Open a BB thread and choose **Wterm terminal** from the new-tab menu. Each
 activation, including **+** for another tab, creates a new terminal session.
 The picker in an existing tab can still attach to a running session.
 
-The chat composer also has a terminal button. On BB hosts that support
-`experimental_primarySurface`, it collapses chat so this thread's terminal
-fills the pane (**Exit Full Screen** returns to chat). Packaged BB 0.40.0
-ignores that flag and opens the side panel or picker instead; reloading the
-plugin cannot add full-screen Chat ↔ CLI to that app.
+The chat composer also has a terminal button. If a Wterm tab is already open,
+it reveals that panel; otherwise it creates a new session. On BB hosts that
+support `experimental_primarySurface`, it collapses chat so the terminal fills
+the pane (**Exit Full Screen** returns to chat). Packaged BB 0.40.0 ignores that
+flag and opens the side panel or picker instead; reloading the plugin cannot add
+full-screen Chat ↔ CLI to that app.
 
 ## Update
 
@@ -64,7 +67,7 @@ installed release explicitly:
 
 ```sh
 bb plugin remove wterm-terminal-preview
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.16' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.17' --yes
 bb plugin source wterm-terminal-preview
 ```
 

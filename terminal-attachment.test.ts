@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   decodeBase64,
+  encodeBase64,
   LegacyTerminalAttachment,
 } from "./terminal-attachment";
 
@@ -71,9 +72,21 @@ afterEach(() => {
 
 describe("decodeBase64", () => {
   it("decodes binary bytes without changing values", () => {
-    expect(decodeBase64("AAH+/w==")).toEqual(
-      new Uint8Array([0, 1, 254, 255]),
-    );
+    expect(decodeBase64("AAH+/w==")).toEqual(new Uint8Array([0, 1, 254, 255]));
+  });
+});
+
+describe("encodeBase64", () => {
+  it("matches btoa for small buffers", () => {
+    const bytes = new Uint8Array([0, 1, 254, 255]);
+    expect(encodeBase64(bytes)).toBe("AAH+/w==");
+    expect(decodeBase64(encodeBase64(bytes))).toEqual(bytes);
+  });
+
+  it("encodes a 100KiB buffer round-trip", () => {
+    const bytes = new Uint8Array(100 * 1024);
+    for (let i = 0; i < bytes.length; i += 1) bytes[i] = i & 0xff;
+    expect(decodeBase64(encodeBase64(bytes))).toEqual(bytes);
   });
 });
 
@@ -112,6 +125,31 @@ describe("LegacyTerminalAttachment", () => {
       "replay-2",
       "live",
       "after",
+    ]);
+  });
+
+  it("inserts out-of-order replay chunks by seq before live", () => {
+    const attachment = new LegacyTerminalAttachment("terminal-1");
+    const received: string[] = [];
+    attachment.subscribe((chunk) =>
+      received.push(`${chunk.seq}:${new TextDecoder().decode(chunk.bytes)}`),
+    );
+    attachment.connect();
+    const socket = FakeWebSocket.instances[0]!;
+
+    socket.receive(output(3, "live"));
+    socket.receive({ type: "attached", nextSeq: 3 });
+    socket.receive(output(1, "replay-1"));
+    socket.receive(output(0, "replay-0"));
+    socket.receive(output(0, "dup-0"));
+    expect(received).toEqual([]);
+    socket.receive(output(2, "replay-2"));
+
+    expect(received).toEqual([
+      "0:replay-0",
+      "1:replay-1",
+      "2:replay-2",
+      "3:live",
     ]);
   });
 

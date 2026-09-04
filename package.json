@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-wterm-terminal-preview",
-  "version": "0.3.16",
+  "version": "0.3.17",
   "description": "Ghostty-backed, thread-scoped terminal for BB with file upload and font controls.",
   "private": true,
   "license": "MIT",
@@ -14,7 +14,7 @@
     "url": "https://github.com/Diffuzmetall/bb-wterm-terminal-plugin/issues"
   },
   "scripts": {
-    "build": "bb plugin build",
+    "build": "bb plugin build && cp ghostty-vt.wasm SymbolsNerdFontMono-Regular.woff2 dist/",
     "test": "vitest run --config vitest.config.ts"
   },
   "engines": {

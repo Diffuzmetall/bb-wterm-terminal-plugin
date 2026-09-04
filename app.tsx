@@ -7,81 +7,35 @@ import {
 } from "@bb/plugin-sdk/app";
 import * as BbApp from "@bb/plugin-sdk/app";
 import type { wtermRpcContract } from "./server";
+import { evaluateTerminalPresence } from "./terminal-open-policy.js";
 import {
-	evaluateTerminalPresence,
-	type TerminalOpenCandidate,
-} from "./terminal-open-policy.js";
-import { trackWtermMount } from "./wterm-open-count.js";
+	beginWtermOpen,
+	trackWtermMount,
+	wtermOpenCount,
+} from "./wterm-open-count.js";
 import { SessionTerminalComposerAction } from "./session-terminal-action.js";
 import {
-	resolveSessionTerminalId,
+	hasTerminalParams,
+	initialPanelParams,
 	revealSessionTerminalPanel,
+	writeLastTerminalId,
+	type TerminalParams,
 } from "./session-terminal-composer.js";
+import {
+	partitionRunningExited,
+	pickerStateFromRpc,
+	type PickerListState,
+	type PickerSession,
+} from "./picker-state.js";
 import { toast } from "sonner";
 import "./app.css";
 
 const PLUGIN_ID = "wterm-terminal-preview";
 const PANEL_ACTION_ID = "terminal";
 const PANEL_TITLE = "Wterm terminal";
-const LAST_TERMINAL_STORAGE_PREFIX = "bb.wterm-terminal-preview";
 
 const loadTerminalPanel = () => import("./terminal-panel.js");
 const TerminalPanel = lazy(loadTerminalPanel);
-type Session = {
-	id: string;
-	title: string;
-	initialCwd: string | null;
-	status: string;
-	updatedAt: number;
-	lastUserInputAt: number | null;
-};
-const isActive = (item: Session) => {
-	const status = item.status.toLowerCase();
-	return status === "running" || status === "starting";
-};
-
-function terminalStorageKey(threadId: string): string {
-	return `${LAST_TERMINAL_STORAGE_PREFIX}.${threadId}`;
-}
-
-function readLastTerminalId(threadId: string): string | null {
-	try {
-		const saved = window.localStorage.getItem(terminalStorageKey(threadId));
-		if (!saved) return null;
-		const parsed: unknown = JSON.parse(saved);
-		return hasTerminalParams(parsed) ? parsed.terminalId : null;
-	} catch {
-		return null;
-	}
-}
-
-function writeLastTerminalId(threadId: string, terminalId: string): void {
-	try {
-		window.localStorage.setItem(
-			terminalStorageKey(threadId),
-			JSON.stringify({ schemaVersion: 1, terminalId }),
-		);
-	} catch {
-		// Reopening still works for the current tab when storage is unavailable.
-	}
-}
-
-function terminalCandidates(value: unknown): TerminalOpenCandidate[] {
-	if (!Array.isArray(value)) return [];
-	return value.flatMap((item) => {
-		if (
-			typeof item !== "object" ||
-			item === null ||
-			!("id" in item) ||
-			typeof item.id !== "string" ||
-			!("status" in item) ||
-			typeof item.status !== "string"
-		) {
-			return [];
-		}
-		return [{ id: item.id, status: item.status }];
-	});
-}
 
 function useTrackOpenWtermTab(threadId: string, params: unknown): void {
 	const terminalId = hasTerminalParams(params) ? params.terminalId : null;
@@ -134,6 +88,7 @@ function createdTerminalId(result: unknown): string {
 	}
 	throw new Error("Plugin returned an unexpected createTerminal response.");
 }
+
 function Picker({
 	threadId,
 	replace,
@@ -144,30 +99,33 @@ function Picker({
 	notice?: string;
 }) {
 	const rpc = useRpc<typeof wtermRpcContract>();
-	const [items, setItems] = useState<Session[]>([]);
+	const [list, setList] = useState<PickerListState>({ kind: "loading" });
 	const [creating, setCreating] = useState(false);
+	const [reload, setReload] = useState(0);
 	const request = useRef({ generation: 0, mounted: false });
 	const isCurrent = (generation: number) =>
 		request.current.mounted && request.current.generation === generation;
 	useEffect(() => {
 		request.current.mounted = true;
 		const generation = request.current.generation;
+		setList({ kind: "loading" });
 		rpc
 			.call("listSessions", { threadId })
 			.then(
 				(next) => {
-					if (isCurrent(generation)) setItems(next);
+					if (isCurrent(generation))
+						setList(pickerStateFromRpc({ status: "fulfilled", value: next }));
 				},
-				() => {
-					if (isCurrent(generation)) setItems([]);
+				(error) => {
+					if (isCurrent(generation))
+						setList(pickerStateFromRpc({ status: "rejected", reason: error }));
 				},
-			)
-			.catch(() => {});
+			);
 		return () => {
 			request.current.mounted = false;
 			request.current.generation += 1;
 		};
-	}, [rpc, threadId]);
+	}, [reload, rpc, threadId]);
 	const select = (id: string) => replace({ schemaVersion: 1, terminalId: id });
 	const restart = (id: string) => {
 		const generation = request.current.generation;
@@ -175,19 +133,23 @@ function Picker({
 			.call("restartTerminal", { threadId, terminalId: id })
 			.then(
 				(updated) => {
-					if (!isCurrent(generation)) return;
-					setItems((current) =>
-						current.map((item) => (item.id === id ? updated : item)),
-					);
+					if (!isCurrent(generation) || list.kind !== "loaded") return;
+					setList({
+						kind: "loaded",
+						items: list.items.map((item) =>
+							item.id === id ? (updated as PickerSession) : item,
+						),
+					});
 					select(updated.id);
 				},
-				() => {},
-			)
-			.catch(() => {});
+				() => undefined,
+			);
 	};
-	const running = items.filter(isActive);
-	const exited = items.filter((item) => !isActive(item));
-	const renderItem = (item: Session) => (
+	const { running, exited } =
+		list.kind === "loaded"
+			? partitionRunningExited(list.items)
+			: { running: [], exited: [] };
+	const renderItem = (item: PickerSession) => (
 		<div key={item.id} className="rounded border p-3">
 			<button
 				type="button"
@@ -224,52 +186,80 @@ function Picker({
 							(item) => {
 								if (isCurrent(generation)) select(item.id);
 							},
-							() => {},
+							() => undefined,
 						)
 						.finally(() => {
 							if (isCurrent(generation)) setCreating(false);
-						})
-						.catch(() => {});
+						});
 				}}
 				className="rounded border px-3 py-2 text-sm"
 			>
 				{creating ? "Creating…" : "New terminal"}
 			</button>
-			<section>
-				<h3 className="text-xs font-medium uppercase">Running</h3>
-				{running.map(renderItem)}
-			</section>
-			<section>
-				<h3 className="text-xs font-medium uppercase">Exited</h3>
-				{exited.map((item) => (
-					<div key={item.id} className="rounded border p-3 opacity-80">
-						<div>{item.title}</div>
-						<div className="text-xs text-muted-foreground">
-							{item.initialCwd ?? "~"} · status: {item.status} · updated{" "}
-							{new Date(item.updatedAt).toLocaleString()}
-						</div>
-						<div className="text-xs text-muted-foreground">
-							Last input:{" "}
-							{item.lastUserInputAt
-								? new Date(item.lastUserInputAt).toLocaleString()
-								: "never"}{" "}
-							· Read-only
-						</div>
-						<button
-							type="button"
-							onClick={() => restart(item.id)}
-							className="mt-2 rounded border px-2 py-1 text-xs"
-						>
-							Restart
-						</button>
-					</div>
-				))}
-			</section>
+			{list.kind === "loading" ? (
+				<div
+					className="wterm-picker-skeleton"
+					aria-busy="true"
+					aria-label="Loading terminals"
+				/>
+			) : null}
+			{list.kind === "failed" ? (
+				<div className="flex flex-col items-start gap-2">
+					<p role="alert">{list.message}</p>
+					<button
+						type="button"
+						className="rounded border px-3 py-2 text-sm"
+						onClick={() => setReload((current) => current + 1)}
+					>
+						Retry
+					</button>
+				</div>
+			) : null}
+			{list.kind === "loaded" ? (
+				<>
+					<section>
+						<h3 className="text-xs font-medium uppercase">Running</h3>
+						{running.length === 0 ? (
+							<p className="text-xs text-muted-foreground">
+								No running terminals.
+							</p>
+						) : (
+							running.map(renderItem)
+						)}
+					</section>
+					{exited.length > 0 ? (
+						<section>
+							<h3 className="text-xs font-medium uppercase">Exited</h3>
+							{exited.map((item) => (
+								<div key={item.id} className="rounded border p-3 opacity-80">
+									<div>{item.title}</div>
+									<div className="text-xs text-muted-foreground">
+										{item.initialCwd ?? "~"} · status: {item.status} · updated{" "}
+										{new Date(item.updatedAt).toLocaleString()}
+									</div>
+									<div className="text-xs text-muted-foreground">
+										Last input:{" "}
+										{item.lastUserInputAt
+											? new Date(item.lastUserInputAt).toLocaleString()
+											: "never"}{" "}
+										· Read-only
+									</div>
+									<button
+										type="button"
+										onClick={() => restart(item.id)}
+										className="mt-2 rounded border px-2 py-1 text-xs"
+									>
+										Restart
+									</button>
+								</div>
+							))}
+						</section>
+					) : null}
+				</>
+			) : null}
 		</div>
 	);
 }
-
-type TerminalParams = { schemaVersion: 1; terminalId: string };
 
 function SelectedTerminal({
 	threadId,
@@ -322,7 +312,7 @@ function SelectedTerminal({
 						setState(presence === "missing" ? "error" : presence);
 					},
 				)
-				.catch(() => {});
+				.catch(() => undefined);
 		};
 		verify();
 		return () => {
@@ -413,55 +403,15 @@ function LegacyTerminalAction({
 	threadId: string;
 	params: unknown;
 }) {
-	const storageKey = terminalStorageKey(threadId);
-	const [fallbackParams, setFallbackParams] = useState<unknown>(() => {
-		try {
-			const saved = window.localStorage.getItem(storageKey);
-			if (saved) {
-				const parsed: unknown = JSON.parse(saved);
-				if (hasTerminalParams(parsed)) return parsed;
-			}
-		} catch {}
-		return null;
-	});
-	const currentParams = hasTerminalParams(params) ? params : fallbackParams;
+	const [selectedParams, setSelectedParams] = useState<unknown>(null);
+	const currentParams = initialPanelParams(params) ?? selectedParams;
 	const replace = (nextParams: unknown) => {
-		setFallbackParams(nextParams);
-		try {
-			window.localStorage.setItem(storageKey, JSON.stringify(nextParams));
-		} catch {}
+		setSelectedParams(nextParams);
+		if (hasTerminalParams(nextParams)) {
+			writeLastTerminalId(threadId, nextParams.terminalId);
+		}
 	};
 	return <Panel threadId={threadId} params={currentParams} replace={replace} />;
-}
-
-function hasTerminalParams(value: unknown): value is TerminalParams {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		"schemaVersion" in value &&
-		(value as { schemaVersion?: unknown }).schemaVersion === 1 &&
-		"terminalId" in value &&
-		typeof (value as { terminalId?: unknown }).terminalId === "string" &&
-		(value as { terminalId: string }).terminalId.length > 0
-	);
-}
-
-async function openSessionTerminal(
-	threadId: string,
-	openPanel: (terminalId: string) => void,
-): Promise<void> {
-	void loadTerminalPanel()
-		.then(({ preloadTerminalPanel }) => preloadTerminalPanel())
-		.catch(() => {});
-	const terminalId = await resolveSessionTerminalId({
-		createTerminalId: async () =>
-			createdTerminalId(await callBackendRpc("createTerminal", { threadId })),
-		lastTerminalId: readLastTerminalId(threadId),
-		listCandidates: async () =>
-			terminalCandidates(await callBackendRpc("listSessions", { threadId })),
-	});
-	writeLastTerminalId(threadId, terminalId);
-	openPanel(terminalId);
 }
 
 function OpenSessionTerminalAction() {
@@ -472,14 +422,31 @@ function OpenSessionTerminalAction() {
 				try {
 					void loadTerminalPanel()
 						.then(({ preloadTerminalPanel }) => preloadTerminalPanel())
-						.catch(() => {});
-					const lastTerminalId = readLastTerminalId(threadId);
-					revealSessionTerminalPanel({
-						actionId: PANEL_ACTION_ID,
-						openThreadPanel: navigate.openThreadPanel,
-						...(lastTerminalId === null ? {} : { terminalId: lastTerminalId }),
-						title: PANEL_TITLE,
-					});
+						.catch(() => undefined);
+					if (wtermOpenCount(threadId) > 0) {
+						revealSessionTerminalPanel({
+							actionId: PANEL_ACTION_ID,
+							openThreadPanel: navigate.openThreadPanel,
+							title: PANEL_TITLE,
+						});
+						return;
+					}
+					const release = beginWtermOpen(threadId);
+					try {
+						const terminalId = createdTerminalId(
+							await callBackendRpc("createTerminal", { threadId }),
+						);
+						writeLastTerminalId(threadId, terminalId);
+						revealSessionTerminalPanel({
+							actionId: PANEL_ACTION_ID,
+							openThreadPanel: navigate.openThreadPanel,
+							terminalId,
+							title: PANEL_TITLE,
+						});
+					} catch (error) {
+						release();
+						throw error;
+					}
 				} catch (error) {
 					const message =
 						error instanceof Error ? error.message : String(error);
@@ -505,18 +472,24 @@ export default definePluginApp((app) => {
 		icon: "Terminal",
 		layout: "flush",
 		async run({ threadId, openPanel }) {
-			void loadTerminalPanel()
-				.then(({ preloadTerminalPanel }) => preloadTerminalPanel())
-				.catch(() => {});
-			const terminalId = createdTerminalId(
-				await callBackendRpc("createTerminal", { threadId }),
-			);
-			writeLastTerminalId(threadId, terminalId);
-			openPanel({
-				title: PANEL_TITLE,
-				params: { schemaVersion: 1, terminalId },
-				experimental_claimedTerminalId: terminalId,
-			});
+			const release = beginWtermOpen(threadId);
+			try {
+				void loadTerminalPanel()
+					.then(({ preloadTerminalPanel }) => preloadTerminalPanel())
+					.catch(() => undefined);
+				const terminalId = createdTerminalId(
+					await callBackendRpc("createTerminal", { threadId }),
+				);
+				writeLastTerminalId(threadId, terminalId);
+				openPanel({
+					title: PANEL_TITLE,
+					params: { schemaVersion: 1, terminalId },
+					experimental_claimedTerminalId: terminalId,
+				});
+			} catch (error) {
+				release();
+				throw error;
+			}
 		},
 		component: function TerminalAction({ threadId, params }) {
 			const { threadId: contextThreadId } = useBbContext();
