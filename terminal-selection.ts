@@ -24,6 +24,35 @@ export interface ViewportTextSource {
   getRows(): number;
 }
 
+export interface TerminalDomSelection<NodeValue> {
+  getRangeAt(index: number): {
+    endContainer: NodeValue;
+    startContainer: NodeValue;
+  };
+  isCollapsed: boolean;
+  rangeCount: number;
+  toString(): string;
+}
+
+/** Return selected terminal text only when both range endpoints are inside it. */
+export function selectedTerminalText<NodeValue>(
+  terminal: { contains(node: NodeValue): boolean },
+  selection: TerminalDomSelection<NodeValue> | null,
+): string | null {
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return null;
+  }
+  const range = selection.getRangeAt(0);
+  if (
+    !terminal.contains(range.startContainer) ||
+    !terminal.contains(range.endContainer)
+  ) {
+    return null;
+  }
+  const text = selection.toString();
+  return text.length > 0 ? text : null;
+}
+
 export function cellAtPoint(
   layout: CellLayout,
   clientX: number,

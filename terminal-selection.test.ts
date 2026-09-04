@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   cellAtPoint,
   extractViewportText,
+  selectedTerminalText,
   selectionMoved,
   type SelectionCell,
 } from "./terminal-selection";
@@ -80,5 +81,41 @@ describe("selectionMoved", () => {
     expect(
       selectionMoved({ col: 1, row: 1 }, { col: 2, row: 1 }),
     ).toBe(true);
+  });
+});
+
+describe("selectedTerminalText", () => {
+  function fixture({
+    end = "inside",
+    start = "inside",
+    text = "selected text",
+  } = {}) {
+    return {
+      selection: {
+        getRangeAt: () => ({ endContainer: end, startContainer: start }),
+        isCollapsed: false,
+        rangeCount: 1,
+        toString: () => text,
+      },
+      terminal: { contains: (node: string) => node === "inside" },
+    };
+  }
+
+  it("returns text only when the full range is inside the terminal", () => {
+    const sample = fixture();
+    expect(selectedTerminalText(sample.terminal, sample.selection)).toBe(
+      "selected text",
+    );
+    expect(
+      selectedTerminalText(
+        sample.terminal,
+        fixture({ end: "outside" }).selection,
+      ),
+    ).toBeNull();
+  });
+
+  it("ignores a selection that belongs to the surrounding page", () => {
+    const sample = fixture({ start: "outside", end: "outside" });
+    expect(selectedTerminalText(sample.terminal, sample.selection)).toBeNull();
   });
 });
