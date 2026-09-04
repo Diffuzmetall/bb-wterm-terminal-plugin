@@ -16,7 +16,6 @@ import {
   Osc52ClipboardFilter,
   copyTextToClipboard,
   flushPendingClipboardCopy,
-  queueClipboardText,
 } from "./osc52-clipboard.js";
 import { createRetryablePromiseCache } from "./retryable-cache.js";
 import {
@@ -87,7 +86,10 @@ export function supportAnyEventMouseMode(core: GhosttyCore): GhosttyCore {
   const initCore = core.init.bind(core);
   const resizeCore = core.resize.bind(core);
   const supportedMode = core.mouseTracking.bind(core);
-  const osc52 = new Osc52ClipboardFilter(queueClipboardText);
+  // Herdr's copy-on-select arrives outside the original pointer gesture.
+  // Try the synchronous path immediately; it still falls back to the queued
+  // async write when the browser refuses a script-initiated copy.
+  const osc52 = new Osc52ClipboardFilter(copyTextToClipboard);
   let anyEventMouse = false;
   let controlTail = "";
   let initialized = false;

@@ -6,6 +6,7 @@ import {
   shouldApplyTerminalResize,
   shouldClearSelectionOnWheel,
   computeFollowBottom,
+  supportAnyEventMouseMode,
 } from "./wterm-renderer";
 
 function selectionFixture({
@@ -171,5 +172,36 @@ describe("computeFollowBottom", () => {
     expect(source).toContain('scroller.addEventListener("scroll", onScroll');
     expect(source).toContain("if (element && shouldRestoreBottom)");
     expect(source).not.toContain("onScroll=");
+  });
+});
+
+describe("OSC 52 from TUI output", () => {
+  it("attempts a synchronous clipboard copy immediately", () => {
+    const execCommand = vi.fn(() => true);
+    const field = {
+      value: "",
+      style: { position: "", left: "" },
+      setAttribute: vi.fn(),
+      select: vi.fn(),
+      remove: vi.fn(),
+    };
+    vi.stubGlobal("document", {
+      createElement: () => field,
+      execCommand,
+      body: { append: vi.fn() },
+    });
+
+    const core = {
+      init: vi.fn(),
+      resize: vi.fn(),
+      writeRaw: vi.fn(),
+      writeString: vi.fn(),
+      mouseTracking: vi.fn(() => 0),
+    };
+    const wrapped = supportAnyEventMouseMode(core as never);
+    wrapped.writeString(`\x1b]52;c;${btoa("herdr")}`);
+
+    expect(execCommand).toHaveBeenCalledWith("copy");
+    expect(field.value).toBe("herdr");
   });
 });
