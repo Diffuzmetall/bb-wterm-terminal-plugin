@@ -28,6 +28,8 @@ normal shells and TUI sessions.
 - Keyboard, resize, wheel, click, and button-drag mouse input for terminal UIs.
 - Persistent font size controls from 10px to 24px.
 - Native, character-level text selection contained inside the terminal and copied on selection. The copy event is scoped to the terminal, so surrounding BB message rows are never included.
+- OSC 8 hyperlinks: ordinary clicks open HTTP(S) links through BB's browser
+  preference, while absolute `file://` links open in BB's file preview.
 - OSC 52 clipboard writes from TUIs such as Herdr, plus cell-based copy-on-drag while mouse tracking is enabled. Copy uses a synchronous clipboard write during the pointer gesture so it still works when async clipboard permission is missing.
 - File upload by button or drag-and-drop, plus image upload from the clipboard.
 - Files are written on the terminal host and their quoted path is inserted at

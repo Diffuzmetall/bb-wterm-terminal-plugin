@@ -6,6 +6,7 @@ import {
   supportAnyEventMouseMode,
 } from "./wterm-renderer";
 import { encodeLatin1 } from "./osc52-clipboard";
+import { terminalLinkAction } from "./terminal-links";
 
 const wasmBytes = await readFile(new URL("./ghostty-vt.wasm", import.meta.url));
 
@@ -95,5 +96,26 @@ describe("Ghostty core wrapper", () => {
     core.resize(1, 1);
     expect(core.getCols()).toBe(80);
     expect(core.getRows()).toBe(24);
+  });
+
+  it("exposes OSC 8 web and file links through the renderer-safe core wrapper", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(wasmBytes, { headers: { "content-type": "application/wasm" } })),
+    );
+    const core = supportAnyEventMouseMode(
+      await GhosttyCore.load({ wasmPath: "http://wterm.test/ghostty-vt.wasm" }),
+    );
+    core.init(80, 24);
+    core.writeString(
+      "\x1b]8;;https://example.com\x07web\x1b]8;;\x07\r\n" +
+        "\x1b]8;;file:///workspace/src/app.ts\x07file\x1b]8;;\x07",
+    );
+
+    expect(core.getCell(0, 0).linkUri).toBe("https://example.com/");
+    expect(terminalLinkAction(core.getCell(1, 0).linkUri ?? "")).toEqual({
+      kind: "file",
+      path: "/workspace/src/app.ts",
+    });
   });
 });

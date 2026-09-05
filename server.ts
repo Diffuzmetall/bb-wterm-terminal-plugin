@@ -39,6 +39,7 @@ const session = z.object({
 	id: z.string(),
 	title: z.string(),
 	initialCwd: z.string().nullable(),
+	hostId: z.string().nullable(),
 	status: z.string(),
 	updatedAt: z.number(),
 	lastUserInputAt: z.number().nullable(),
@@ -247,6 +248,7 @@ function unavailableLinkedSession(terminalId: string): Session {
 		id: terminalId,
 		title: "Wterm terminal",
 		initialCwd: null,
+		hostId: null,
 		status: "unavailable",
 		updatedAt: 0,
 		lastUserInputAt: null,
@@ -382,6 +384,7 @@ function mapSession(value: {
 	id: string;
 	title: string;
 	initialCwd: string;
+	hostId?: string;
 	status: string;
 	updatedAt: number;
 	lastUserInputAt?: number | null;
@@ -390,6 +393,7 @@ function mapSession(value: {
 		id: value.id,
 		title: value.title,
 		initialCwd: value.initialCwd,
+		hostId: value.hostId ?? null,
 		status: value.status,
 		updatedAt: value.updatedAt,
 		lastUserInputAt: value.lastUserInputAt ?? null,

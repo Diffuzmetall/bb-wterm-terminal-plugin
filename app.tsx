@@ -274,6 +274,7 @@ function SelectedTerminal({
 	const rpcRef = useRef(rpc);
 	const [retry, setRetry] = useState(0);
 	const [state, setState] = useState<"ready" | "missing" | "error">("ready");
+	const [session, setSession] = useState<PickerSession | null>(null);
 	rpcRef.current = rpc;
 
 	useEffect(() => {
@@ -296,6 +297,9 @@ function SelectedTerminal({
 							retryTimer = window.setTimeout(verify, 400);
 							return;
 						}
+						setSession(
+							items.find((item) => item.id === params.terminalId) ?? null,
+						);
 						setState(presence);
 					},
 					() => {
@@ -342,7 +346,7 @@ function SelectedTerminal({
 				</button>
 			</div>
 		);
-	return <TerminalPanel threadId={threadId} params={params} />;
+	return <TerminalPanel threadId={threadId} params={params} session={session} />;
 }
 
 function Panel({

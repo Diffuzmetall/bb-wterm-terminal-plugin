@@ -4,6 +4,7 @@ export type PickerSession = {
   id: string;
   title: string;
   initialCwd: string | null;
+  hostId: string | null;
   status: string;
   updatedAt: number;
   lastUserInputAt: number | null;
@@ -37,6 +38,10 @@ export function parsePickerSessions(value: unknown): PickerSession[] {
         title: (item as { title: string }).title,
         initialCwd: typeof initialCwd === "string" ? initialCwd : null,
         status: (item as { status: string }).status,
+        hostId:
+          typeof (item as { hostId?: unknown }).hostId === "string"
+            ? (item as { hostId: string }).hostId
+            : null,
         updatedAt: (item as { updatedAt: number }).updatedAt,
         lastUserInputAt:
           typeof lastUserInputAt === "number" ? lastUserInputAt : null,

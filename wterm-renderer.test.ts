@@ -143,6 +143,18 @@ describe("first paint and TUI scrollback", () => {
   });
 });
 
+describe("terminal hyperlink activation", () => {
+  it("delegates rendered anchors to the BB link opener", () => {
+    const source = readFileSync(
+      new URL("./wterm-renderer.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain('onClick={handleLinkClick}');
+    expect(source).toContain("terminalLinkAction(link.href)");
+    expect(source).toContain("onLinkClick(link.href)");
+  });
+});
+
 describe("computeFollowBottom", () => {
   it("is false when the inner scroller is not at the bottom", () => {
     expect(

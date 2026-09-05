@@ -12,6 +12,7 @@ import {
 import { GhosttyCore } from "@wterm/ghostty";
 import { Terminal, type TerminalHandle } from "@wterm/react";
 import type { TerminalAttachment } from "./terminal-attachment.js";
+import { terminalLinkAction, terminalLinkHref } from "./terminal-links.js";
 import { getPluginToken } from "./plugin-token.js";
 import {
   Osc52ClipboardFilter,
@@ -128,6 +129,12 @@ export function supportAnyEventMouseMode(core: GhosttyCore): GhosttyCore {
   const initCore = core.init.bind(core);
   const resizeCore = core.resize.bind(core);
   const supportedMode = core.mouseTracking.bind(core);
+  const getCell = core.getCell?.bind(core);
+  const getScrollbackCell = core.getScrollbackCell?.bind(core);
+  const decorateCell = <Cell extends { linkUri?: string }>(cell: Cell): Cell => {
+    const href = terminalLinkHref(cell.linkUri);
+    return href === cell.linkUri ? cell : ({ ...cell, linkUri: href } as Cell);
+  };
   // Herdr's copy-on-select arrives outside the original pointer gesture.
   // Try the synchronous path immediately; it still falls back to the queued
   // async write when the browser refuses a script-initiated copy.
@@ -221,6 +228,13 @@ export function supportAnyEventMouseMode(core: GhosttyCore): GhosttyCore {
     writeString(filtered, afterChunk);
   };
   core.mouseTracking = () => (anyEventMouse ? 1002 : supportedMode());
+  if (getCell) {
+    core.getCell = (row, col) => decorateCell(getCell(row, col));
+  }
+  if (getScrollbackCell) {
+    core.getScrollbackCell = (offset, col) =>
+      decorateCell(getScrollbackCell(offset, col));
+  }
   return core;
 }
 
@@ -380,10 +394,12 @@ type TerminalFontStyle = CSSProperties & {
 export function WtermRenderer({
   attachment,
   fontSizePx = 14,
+  onLinkClick,
   wasmUrl = GHOSTTY_WASM_URL,
 }: {
   attachment: TerminalAttachment;
   fontSizePx?: number;
+  onLinkClick?: (href: string) => boolean;
   wasmUrl?: string;
 }) {
   const terminalRef = useRef<TerminalHandle>(null);
@@ -736,6 +752,24 @@ export function WtermRenderer({
     [],
   );
 
+  const handleLinkClick = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const link = target.closest<HTMLAnchorElement>(".term-link");
+      if (!link || !onLinkClick) return;
+      const action = terminalLinkAction(link.href);
+      if (
+        action?.kind === "url" &&
+        (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+      ) {
+        return;
+      }
+      if (onLinkClick(link.href)) event.preventDefault();
+    },
+    [onLinkClick],
+  );
+
   if (error) {
     const detail = error instanceof Error ? error.message : String(error);
     return (
@@ -784,6 +818,7 @@ export function WtermRenderer({
       }}
       onWheelCapture={handleWheelCapture}
       onCopyCapture={handleCopy}
+      onClick={handleLinkClick}
       style={terminalFontStyle}
       className="wterm-renderer"
       data-renderer="ghostty"
@@ -795,10 +830,12 @@ export function TerminalRenderer({
   terminalId,
   attachment,
   fontSizePx = 14,
+  onLinkClick,
 }: {
   terminalId: string;
   attachment: TerminalAttachment | null;
   fontSizePx?: number;
+  onLinkClick?: (href: string) => boolean;
 }) {
   if (!attachment) {
     return (
@@ -813,6 +850,7 @@ export function TerminalRenderer({
         key={terminalId}
         attachment={attachment}
         fontSizePx={fontSizePx}
+        onLinkClick={onLinkClick}
       />
     </div>
   );

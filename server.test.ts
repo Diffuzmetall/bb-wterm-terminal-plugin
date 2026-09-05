@@ -218,6 +218,7 @@ describe("Wterm server boundaries", () => {
           id: "term-1",
           title: "Shell",
           initialCwd: "/tmp",
+          hostId: "host-1",
           status: "running",
           updatedAt: 10,
         },
@@ -249,7 +250,7 @@ describe("Wterm server boundaries", () => {
 
     await expect(
       handlers.listSessions({ threadId: "thread-1" }),
-    ).resolves.toMatchObject([{ id: "term-1" }]);
+    ).resolves.toMatchObject([{ id: "term-1", hostId: "host-1" }]);
     await handlers.createTerminal({ threadId: "thread-1" });
     expect(list).toHaveBeenCalledWith({
       scope: { kind: "thread", threadId: "thread-1" },
@@ -384,6 +385,7 @@ describe("Wterm server boundaries", () => {
         id: "term-environment",
         title: "Wterm terminal",
         initialCwd: null,
+        hostId: null,
         status: "unavailable",
         updatedAt: 0,
         lastUserInputAt: null,
@@ -459,6 +461,7 @@ describe("Wterm server boundaries", () => {
         id: "term-old",
         title: "Wterm terminal",
         initialCwd: null,
+        hostId: null,
         status: "unavailable",
         updatedAt: 0,
         lastUserInputAt: null,
