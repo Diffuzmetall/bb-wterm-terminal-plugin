@@ -40,6 +40,33 @@ describe("Ghostty core wrapper", () => {
     expect(afterChunk).toHaveBeenCalled();
   });
 
+  it("accepts a direct Kitty RGB image and exposes bounded graphics state", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(wasmBytes, { headers: { "content-type": "application/wasm" } })),
+    );
+    const core = supportAnyEventMouseMode(
+      await GhosttyCore.load({
+        wasmPath: "http://wterm.test/ghostty-vt.wasm",
+        imageStorageLimit: 32 * 1024 * 1024,
+      }),
+    );
+    core.init(80, 24);
+
+    expect(() => {
+      core.writeString("\x1b_Ga=T,f=24,s=1,v=1,c=1,r=1,m=0;AP8A\x1b\\");
+    }).not.toThrow();
+    const graphics = core.getGraphicsState();
+    expect(graphics?.images).toHaveLength(1);
+    expect(graphics?.placements).toHaveLength(1);
+    expect(core.getResourceState().graphics?.capacity).toBe(32 * 1024 * 1024);
+    const image = graphics?.images[0];
+    expect(image).toBeDefined();
+    expect(core.getGraphicsImage?.(image!.imageId, image!.version)?.rgba).toEqual(
+      new Uint8Array([0, 255, 0, 255]),
+    );
+  });
+
   it("tracks fragmented DEC 1003 enable and disable sequences", async () => {
     vi.stubGlobal(
       "fetch",

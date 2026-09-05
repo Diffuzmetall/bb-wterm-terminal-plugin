@@ -2,10 +2,10 @@
 task: "Make Wterm fast, flicker-free, and reliable"
 slug: 20260904-011200_wterm-speed-and-feel
 project: bb-wterm-terminal-plugin
-phase: complete
-progress: 53/53
+phase: climbing
+progress: 59/60
 started: 2026-09-04T01:12:10+03:00
-updated: 2026-09-04T18:16:50+03:00
+updated: 2026-09-05T10:45:00+03:00
 principal_stated_goal: "изучи пожалуйста его докумментацию рантайм как он связан с bb как он в целом работает и дай мне детальный план что внедрить что делать чтобы он работал быстро четко не фликерил там все круто открывалось тут в вебе и так далее"
 principal_stated_goal_source: conversation
 principal_stated_goal_signal: 2
@@ -69,10 +69,10 @@ _Avoid:_ “buffer dump”, “scrollback restore” (scrollback is the renderer
 
 - Runtime deps must still install under `npm install --omit=dev`; tests stay `devDependencies`.
 - Plugin ID remains `wterm-terminal-preview`; host APIs stay optional/feature-detected.
-- `@wterm/*` target is the lockfile 0.4.0 line after `npm ci`; do not invent a private fork.
+- `@wterm/*` target is the lockfile 0.5.0 line after `npm ci`; do not invent a private fork.
 - KV schema for linked IDs must read legacy `string[]` and the new record form.
 - `zod` 4.3.6 and `vitest` 4.1.10 stay pinned.
-- Root `ghostty-vt.wasm` (577 KB, 0.4.0) is the source of truth; `dist/` is build output.
+- Root `ghostty-vt.wasm` (577 KB, 0.5.0) is the source of truth; `dist/` is build output.
 - No file deletion without explicit written permission.
 - Probes attach at user-visible or RPC/HTTP seams (`npm test`, plugin HTTP, picker/renderer behavior), not `@wterm` internals.
 
@@ -80,7 +80,7 @@ _Avoid:_ “buffer dump”, “scrollback restore” (scrollback is the renderer
 
 "изучи пожалуйста его докумментацию рантайм как он связан с bb как он в целом работает и дай мне детальный план что внедрить что делать чтобы он работал быстро четко не фликерил там все круто открывалось тут в вебе и так далее"
 
-Make the installed Wterm preview in the BB web app open quickly, stay visually stable, and remain correct under multi-tab create/verify: aligned `@wterm` 0.4.0 assets, no blank/white first frame, no TUI color bleed in scrollback, no false “session unavailable” right after create, no zombie `running` reconnects, shared token/font/WASM work, and the existing standalone security/ordering suite still passing.
+Make the installed Wterm preview in the BB web app open quickly, stay visually stable, and remain correct under multi-tab create/verify: aligned `@wterm` 0.5.0 assets, bounded Kitty Graphics, no blank/white first frame, no TUI color bleed in scrollback, no false “session unavailable” right after create, no zombie `running` reconnects, shared token/font/WASM work, and the existing standalone security/ordering suite still passing.
 
 ## Test Strategy
 
@@ -123,6 +123,13 @@ Make the installed Wterm preview in the BB web app open quickly, stay visually s
 | ISC-40 | anti | newly mounted tab without host params must not hydrate from lastTerminalId | fixture last id present; panel still Picker or new create, not last PTY | Vitest | derived: new tab is new PTY |
 | ISC-41 | unit | Picker "New terminal" always createTerminal | never `replace(lastId)` | Vitest | derived: new tab is new PTY |
 | ISC-42 | e2e/manual | headed: second Wterm tab shows a different terminal id than the first | two distinct PTYs | agent-browser / BB web | derived: new tab is new PTY |
+| ISC-51 | install | `@wterm` package versions | all 0.5.0 matching lockfile | npm ls | derived: Kitty Graphics upstream |
+| ISC-52 | build | root, dist, and package Ghostty WASM bytes | identical SHA-256 | sha256sum/cmp | derived: aligned core |
+| ISC-53 | unit/integration | direct Kitty RGB image | image and placement exposed without throw | Vitest + Ghostty | derived: direct graphics |
+| ISC-54 | unit/source | image storage, scrollback, palette configuration | explicit bounded options | Vitest | derived: resource budget |
+| ISC-55 | unit | renderer cleanup | one core dispose at most once | Vitest | derived: lifecycle |
+| ISC-56 | command | regression suite and plugin build | exit 0 | npm + Vitest + bb | derived: no regression |
+| ISC-57 | e2e/manual | headed Kitty image PTY smoke | geometry, flow, resize, scrollback, alternate screen clean | agent-browser / BB web | required: live confirmation |
 | ISC-43 | unit | composer uses real `wtermOpenCount`; helper `resolveSessionTerminalId` takes `openTabCount` | openTabCount>0 does not reuse last; live composer reveals or creates, never last-id on a new tab | Vitest | derived: new tab is new PTY |
 | ISC-31 | unit | replay insert stays ordered without full re-sort each chunk | flush order = seq | Vitest | derived: quickly |
 | ISC-32 | anti | upload/auth/order tests still pass after speed slices | `npm test` green including server + attachment | Vitest | literal |
@@ -246,6 +253,24 @@ makes menus feel stale or late even when click transport itself is fast.
 - [x] ISC-49: headed Herdr sends a hover report before click press/release, with same-cell movement deduplicated.
 - [x] ISC-50: the complete suite and plugin build remain green.
 
+### F10 · Upstream Kitty Graphics 0.5.0
+
+Why: Wterm v0.5.0 now provides the bounded Ghostty graphics path, pixel
+geometry responses, implicit image flow, and explicit core disposal needed by
+the plugin. The BB renderer keeps its transport and local mouse/selection
+adaptations while delegating image placement to upstream.
+
+- [x] ISC-51: package and lockfile dependencies resolve to `@wterm/*` 0.5.0.
+- [x] ISC-52: root, built, and package Ghostty WASM files remain byte-identical.
+- [x] ISC-53: direct Kitty RGB creates a graphics image and placement in Ghostty.
+- [x] ISC-54: renderer loads explicit 1 MiB scrollback, 32 MiB image storage,
+  and the fixed dark terminal palette; upstream DOM bounds image overlays to
+  the actual terminal surface and preserves aspect ratio.
+- [x] ISC-55: renderer-owned Ghostty cores are disposed idempotently on cleanup.
+- [x] ISC-56: full Vitest suite and plugin build remain green after the bump.
+- [ ] ISC-57: headed BB PTY smoke for geometry, implicit flow, resize, scrollback,
+  and alternate screen remains blocked until BB/plugin runtime is available.
+
 ## Anti-claims
 
 - Anti: tests do not depend on the sibling BB workspace at runtime.
@@ -264,7 +289,7 @@ makes menus feel stale or late even when click transport itself is fast.
 - 2026-09-04: Attachment lift (PERF-03) held as fog rather than a premature ISC, so agents do not invent a lifecycle that BB 0.41 may not allow.
 - 2026-09-04: Font subsetting and compileStreaming listed Out of Scope / fog so the plan stays shippable.
 - 2026-09-04: Principal correction: a new terminal / new tab must open a **new** session, not the previous one. Dropped ISC-30 (Reopen last during picker loading). `readLastTerminalId` remains only as a cache write for the current tab and for explicit picker attach. `LegacyTerminalAction` localStorage fallback is the likely current bug (new tab with empty params mounts last PTY). Composer button may still _reveal an already-open panel_; it must not cause a **new** tab to steal last id.
-- 2026-09-04: `bb plugin build` emits JS/CSS only. `npm run build` now copies repo-root `ghostty-vt.wasm` and the Nerd Font into `dist/` after the bundle. Stay on 0.4.0; do not bump to 0.4.1.
+- 2026-09-04: `bb plugin build` emits JS/CSS only. `npm run build` now copies repo-root `ghostty-vt.wasm` and the Nerd Font into `dist/` after the bundle. The 0.4.0 pin was the prior baseline and is superseded by F10's 0.5.0 bump.
 - 2026-09-04: `_measureCharSize` still exists on `@wterm/dom` 0.4.0 as a private method. No fork. Font-size refit keeps the optional private call plus public `resize`.
 - 2026-09-04: Headed F6 closed on BB web (`thr_fgn2njixb7`). Hide/show remounts `TerminalPanel`, but reconnect was not a user-visible stall (WASM cached, PTY still running). Keep PERF-03 / `.16` fog — do not lift attachment.
 - 2026-09-04: Closed fog bead `.16` without implementation. Epic F1–F5 unit/ISC verified; F6 headed observed.
@@ -272,6 +297,7 @@ makes menus feel stale or late even when click transport itself is fast.
 - 2026-09-04: Killed fog browser HTTP cache for WASM/font — still needs security review; not this climb.
 - 2026-09-04: BWT-4 reproduction showed two PTY resizes during BB's 220ms maximize transition. Keep local Wterm auto-resize responsive, but debounce SIGWINCH delivery for 250ms and record only delivered geometry.
 - 2026-09-04: Herdr click transport is not the bottleneck: click → WebSocket input measured 0.3–2.9ms, while the multi-chunk PTY redraw completed around 99–111ms. The actionable compatibility defect was the local 1003 → 1002 downgrade: add only missing no-button SGR motion, deduplicated by terminal cell; do not invent a broader renderer/WebSocket optimization.
+- 2026-09-05: Wterm v0.5.0 is the Kitty Graphics boundary. Use its `imageStorageLimit`, geometry responses, surface-bounded DOM overlays, and implicit-flow handling; keep BB-specific transport and selection wrappers. Do not invent app-level image dimensions before headed evidence.
 
 ## Learning
 
@@ -308,3 +334,7 @@ makes menus feel stale or late even when click transport itself is fast.
 - ISC-44/45/46: BWT-4 attachment reproduced in headed Chromium on <http://127.0.0.1:38896> thread `thr_fgn2njixb7`. Before fix, maximize emitted intermediate PTY sizes 74x31 and 127x31; final bundle `f16766173b42ef1f` emits one 61x31 on restore and one 128x31 on maximize, with Herdr filling the surface and no stale/blank strip. `wterm-renderer.test.ts` 11/11; full suite 13 files / 98 tests; `npm run build`; browser console/page errors and 4xx/5xx empty. BWT-4 attachment `01M1P65D7W4RXA0DQ2VYXQHP8Y`; status `in_review` (2026-09-04).
 - ISC-47/48/50: red-green tests cover fragmented 1003, explicit disable, direct switch to 1002, SGR code/modifiers/one-based coordinates, same-cell dedupe, button-held and Shift exclusions. `npm test`: 13 files / 102 tests; `npm run build`; `git diff --check` clean (2026-09-04).
 - ISC-49: headed Chromium on <http://127.0.0.1:38896> thread `thr_svxmvyshea` after plugin reload. Herdr click emitted `<ESC>[<35;8;5M` before `<ESC>[<0;8;5M` press and `<ESC>[<0;8;5m` release. Ten synthetic mousemoves inside one cell emitted exactly one `<ESC>[<35;11;6M`; browser console/page errors and captured 4xx/5xx were empty. Screenshot: `/home/ubuntu/.bb/pi-bridge-sessions/thr_svxmvyshea/wterm-herdr-1003-smoke.png` (2026-09-04).
+- ISC-51/52: `npm ls` resolves `@wterm/core`, `@wterm/dom`, `@wterm/ghostty`, and `@wterm/react` at 0.5.0; root, `dist/`, and package Ghostty WASM SHA-256 remain `4a0a02357206349ed52b76ebda8feea4a65e453fe4e199832d8c009d7c41ba4f` (2026-09-05).
+- ISC-53/54: direct Kitty RGB integration exposes one image/placement; renderer option and lifecycle tests cover bounded storage/palette and upstream image-surface delegation (2026-09-05).
+- ISC-55/56: idempotent `dispose()` seam test and full `npm test` 14 files / 115 tests plus `npm run build` pass (2026-09-05).
+- ISC-57: headed BB smoke remains unverified because `bb plugin dev` and the active BB endpoint return HTTP 502 (2026-09-05).

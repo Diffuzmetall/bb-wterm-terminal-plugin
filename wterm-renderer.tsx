@@ -37,7 +37,12 @@ const PLUGIN_ID = "wterm-terminal-preview";
 export const GHOSTTY_WASM_URL = `/api/v1/plugins/${PLUGIN_ID}/http/ghostty-vt.wasm`;
 export const NERD_FONT_URL = `/api/v1/plugins/${PLUGIN_ID}/http/symbols-nerd-font-mono-v3.5.0.woff2`;
 export const NERD_FONT_FAMILY = "Wterm Symbols Nerd Font Mono";
+export const GHOSTTY_SCROLLBACK_LIMIT_BYTES = 1024 * 1024;
+export const GHOSTTY_IMAGE_STORAGE_LIMIT_BYTES = 32 * 1024 * 1024;
+export const GHOSTTY_FOREGROUND_COLOR = "#d4d4d4";
+export const GHOSTTY_BACKGROUND_COLOR = "#1e1e1e";
 const nerdFontLoads = new WeakMap<object, Promise<void>>();
+const disposedCores = new WeakSet<object>();
 const anyEventMouseModes = new WeakMap<
   object,
   { enabled: boolean; generation: number }
@@ -118,7 +123,7 @@ export function encodeAnyEventMouseMove({
 }
 
 /**
- * Ghostty WASM 0.4.0 still discards mode 1003 before `mouseTracking()` can
+ * Ghostty WASM 0.5.0 still discards mode 1003 before `mouseTracking()` can
  * expose it. Track that one DEC mode at the write boundary, then let Wterm DOM
  * provide its supported click, wheel, and button-drag subset through mode 1002.
  */
@@ -238,6 +243,24 @@ export function supportAnyEventMouseMode(core: GhosttyCore): GhosttyCore {
   return core;
 }
 
+export function ghosttyCoreOptions(wasmPath: string) {
+  return {
+    wasmPath,
+    scrollbackLimit: GHOSTTY_SCROLLBACK_LIMIT_BYTES,
+    foregroundColor: GHOSTTY_FOREGROUND_COLOR,
+    backgroundColor: GHOSTTY_BACKGROUND_COLOR,
+    imageStorageLimit: GHOSTTY_IMAGE_STORAGE_LIMIT_BYTES,
+  };
+}
+
+export function disposeGhosttyCore(
+  core: Pick<GhosttyCore, "dispose"> | null,
+): void {
+  if (!core || disposedCores.has(core)) return;
+  disposedCores.add(core);
+  core.dispose();
+}
+
 const pluginToken = getPluginToken;
 
 const ghosttyWasmObjectUrl = createRetryablePromiseCache(async () => {
@@ -258,11 +281,11 @@ export async function loadGhosttyCore(
 ): Promise<GhosttyCore> {
   if (wasmUrl !== GHOSTTY_WASM_URL) {
     return supportAnyEventMouseMode(
-      await GhosttyCore.load({ wasmPath: wasmUrl }),
+      await GhosttyCore.load(ghosttyCoreOptions(wasmUrl)),
     );
   }
   return supportAnyEventMouseMode(
-    await GhosttyCore.load({ wasmPath: await ghosttyWasmObjectUrl() }),
+    await GhosttyCore.load(ghosttyCoreOptions(await ghosttyWasmObjectUrl())),
   );
 }
 
@@ -450,6 +473,11 @@ export function WtermRenderer({
       alive = false;
     };
   }, [reloadNonce, wasmUrl]);
+
+  useEffect(() => {
+    if (!core) return;
+    return () => disposeGhosttyCore(core);
+  }, [core]);
 
   readyRef.current = ready;
 

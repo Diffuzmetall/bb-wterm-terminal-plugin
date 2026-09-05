@@ -16,7 +16,7 @@ normal shells and TUI sessions.
 
 ## Features
 
-- Ghostty terminal emulation through `@wterm/ghostty` 0.4.0 and WebAssembly.
+- Ghostty terminal emulation through `@wterm/ghostty` 0.5.0 and WebAssembly.
 - Dark first paint while WASM and the Nerd Font load; leftover TUI colors are not kept on scrollback rows.
 - Composer shortcut: a terminal button in the chat footer. If a Wterm tab is already open in this thread, it reveals that panel. If none is open, it creates a **new** session. On BB hosts that support `experimental_primarySurface`, chat collapses so the terminal fills the thread; use **Exit Full Screen** to return. Packaged BB 0.40.0 does not include that host API, so the same button opens the side panel or session picker instead.
 - Bundled Symbols Nerd Font Mono fallback for Powerline, Starship, and Nerd
@@ -30,6 +30,8 @@ normal shells and TUI sessions.
 - Native, character-level text selection contained inside the terminal and copied on selection. The copy event is scoped to the terminal, so surrounding BB message rows are never included.
 - OSC 8 hyperlinks: ordinary clicks open HTTP(S) links through BB's browser
   preference, while absolute `file://` links open in BB's file preview.
+- Kitty Graphics direct PNG/RGB/RGBA output with bounded image storage and
+  upstream placement/scrollback/resize handling.
 - OSC 52 clipboard writes from TUIs such as Herdr, plus cell-based copy-on-drag while mouse tracking is enabled. Copy uses a synchronous clipboard write during the pointer gesture so it still works when async clipboard permission is missing.
 - File upload by button or drag-and-drop, plus image upload from the clipboard.
 - Files are written on the terminal host and their quoted path is inserted at
