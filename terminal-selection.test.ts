@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   cellAtPoint,
+  cellAtPointClamped,
   extractViewportText,
   selectedTerminalText,
   selectionMoved,
@@ -41,6 +42,11 @@ describe("cellAtPoint", () => {
   it("rejects points outside the grid", () => {
     expect(cellAtPoint(layout, 99, 71)).toBeNull();
     expect(cellAtPoint(layout, 121, 200)).toBeNull();
+  });
+
+  it("clamps a drag endpoint to the nearest cell", () => {
+    expect(cellAtPointClamped(layout, 200, 200)).toEqual({ col: 7, row: 3 });
+    expect(cellAtPointClamped(layout, 99, 49)).toEqual({ col: 0, row: 0 });
   });
 });
 
@@ -88,20 +94,32 @@ describe("selectedTerminalText", () => {
   function fixture({
     end = "inside",
     start = "inside",
-    text = "selected text",
+    scopedText = "selected text",
+    text = scopedText,
   } = {}) {
     return {
       selection: {
-        getRangeAt: () => ({ endContainer: end, startContainer: start }),
+        getRangeAt: () => ({
+          cloneRange: () => ({
+            setEnd: () => undefined,
+            setStart: () => undefined,
+            toString: () => scopedText,
+          }),
+          endContainer: end,
+          startContainer: start,
+        }),
         isCollapsed: false,
         rangeCount: 1,
         toString: () => text,
       },
-      terminal: { contains: (node: string) => node === "inside" },
+      terminal: {
+        childNodes: { length: 1 },
+        contains: (node: string) => node === "inside",
+      },
     };
   }
 
-  it("returns text only when the full range is inside the terminal", () => {
+  it("returns text when the full range is inside the terminal", () => {
     const sample = fixture();
     expect(selectedTerminalText(sample.terminal, sample.selection)).toBe(
       "selected text",
@@ -109,9 +127,13 @@ describe("selectedTerminalText", () => {
     expect(
       selectedTerminalText(
         sample.terminal,
-        fixture({ end: "outside" }).selection,
+        fixture({
+          end: "outside",
+          scopedText: "terminal text",
+          text: "outside plus terminal",
+        }).selection,
       ),
-    ).toBeNull();
+    ).toBe("terminal text");
   });
 
   it("ignores a selection that belongs to the surrounding page", () => {

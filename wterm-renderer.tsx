@@ -21,6 +21,7 @@ import {
 import { createRetryablePromiseCache } from "./retryable-cache.js";
 import {
   cellAtPoint,
+  cellAtPointClamped,
   extractViewportText,
   selectedTerminalText,
   selectionMoved,
@@ -512,12 +513,12 @@ export function WtermRenderer({
         }
       };
       const finishSelection = () => {
-        clearBoundary();
         const selection = window.getSelection();
         const text = selectedTerminalText(
           terminalRef.current?.instance?.element ?? selectionRoot,
           selection,
         );
+        clearBoundary();
         if (text) copyTextToClipboard(text);
       };
 
@@ -552,8 +553,8 @@ export function WtermRenderer({
         const drag = tuiDragRef.current;
         tuiDragRef.current = null;
         if (!drag || up.button !== 0) return;
-        const end = cellAtPoint(drag.layout, up.clientX, up.clientY);
-        if (!end || !selectionMoved(drag.start, end)) return;
+        const end = cellAtPointClamped(drag.layout, up.clientX, up.clientY);
+        if (!selectionMoved(drag.start, end)) return;
         const text = extractViewportText(bridge, drag.start, end);
         if (text.length > 0) copyTextToClipboard(text);
       };

@@ -115,6 +115,16 @@ describe("Osc52ClipboardFilter", () => {
     expect(onWrite).toHaveBeenCalledWith("copied");
   });
 
+  it("preserves a complete sentence from Herdr copy-on-select", () => {
+    const onWrite = vi.fn();
+    const filter = new Osc52ClipboardFilter(onWrite);
+    const sentence = "one two three four five";
+    const payload = encodePayload(sentence);
+
+    expect(filter.consumeString(`\x1b]52;c;${payload}\x07`)).toBe("");
+    expect(onWrite).toHaveBeenCalledWith(sentence);
+  });
+
   it("copies an ST-terminated sequence split across chunks", () => {
     const onWrite = vi.fn();
     const filter = new Osc52ClipboardFilter(onWrite);
