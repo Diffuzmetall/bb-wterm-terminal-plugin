@@ -18,10 +18,19 @@ The active server log contains repeated event-loop stalls while building the BWT
 
 The screenshot supplied after the repeated restart shows the Wterm canvas rendering normally: two `Wterm terminal` tabs are present, the selected tab has a visible input prompt and live terminal status line. The visible failures are emitted by the program running inside the PTY: `Error: Connect error internal` from the Cursor wire, `Error: Compaction cancelled`, and repeated `cache broke` messages. Production scrollback for `term_zf6gij2bnw` and `term_cv3u9a9m24` contains the same Cursor/compaction messages. This shifts the leading diagnosis toward the embedded agent/runtime rather than Wterm painting or PTY transport.
 
-## Not proven
+## Root cause and remediation
 
-The exact user terminal that failed after restart was not identified. No correlated Wterm exception, WebSocket close, or replay-sequence failure was found for that terminal. Therefore no renderer or replay patch was applied: changing code without the terminal ID would risk masking the incident and damaging healthy sessions. The screenshot does not prove that the underlying Cursor session recovered; it proves only that the Wterm view remains attached and renders the underlying errors.
+- The active provider was `@rahularya01/pi-cursor` 1.4.28 with the default Cursor client header `cli-2026.05.01-eea359f`.
+- Its lifecycle/scrollback evidence contained `wire_drift`, unknown `ExecServerMessage` and `ConversationCheckpointUpdate` fields, repeated stream starts, and KV blob misses. Those failures explain the stalled agent and cancelled compaction while Wterm continued to render correctly.
+- `pi-cursor` 1.4.30 added the missing Cursor `agent.v1` envelope fields. Version 1.4.31 also updated the default client header to `cli-2026.07.23-e383d2b`, made transient `internal`/`unavailable` end-stream failures recoverable, and fixed incomplete checkpoint/blob replay.
+- The global pinned package was changed from 1.4.28 to 1.4.31. The installed package, settings pin, and bundled client header were verified on disk.
+- `/reload` was sent once through the affected Wterm/Herdr client. The old bridge closed at the same timestamp; no other terminal session was restarted or closed.
+- A clean authenticated process using the updated transport completed a real `cursor-account-2/cursor-grok-4.6` turn with exact output `BWT14_CURSOR_OK` and exit code 0.
 
-## Next evidence needed
+## Remaining uncertainty
 
-Capture the failing tab's terminal ID (or a screenshot including the tab/error) immediately after the next failure. Then correlate its server-side output/replay/close events and test restart on that same session.
+The transient colour change was not reproduced independently. No correlated Wterm exception, WebSocket close, or replay-sequence failure was found, so no renderer/replay source patch was applied. The verified remediation addresses the terminal becoming unusable because the embedded Cursor provider stalled; it does not claim a separate Wterm colour-rendering RCA.
+
+## Follow-up if the visual symptom returns
+
+Capture the failing tab's terminal ID and screenshot immediately after the colour change. Correlate that ID with terminal resize/replay events before changing renderer code.
