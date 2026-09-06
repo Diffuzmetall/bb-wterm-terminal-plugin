@@ -35,8 +35,11 @@ PTY этот результат не воспроизвела.
   `Preview`, `Raw`, `Copy file path` и содержимым Markdown.
 - Browser page errors и console output пусты. Запросы terminal creation, token,
   Ghostty WASM, font и file content завершились HTTP 200.
+- Direct Kitty RGB escape (`f=24`, `1×1`, placement `12×6`) визуально отрисовал
+  ярко-зелёный canvas в production Wterm. Это подтверждает реальный image output,
+  а не только наличие graphics state в Ghostty.
 - Скриншоты приложены к задаче BWT-13: `wterm-osc8-web-rendered.png` и
-  `wterm-file-route-production.png`.
+  `wterm-file-route-production.png`, `wterm-kitty-rgb-production.png`.
 
 Диагностический вывод: BLOCKED был вызван stale accessibility refs (фокус ушёл
 в composer вместо terminal) и потерей backslash/ESC в первой automation-команде,
@@ -65,6 +68,23 @@ PTY этот результат не воспроизвела.
    direct PNG/RGB/RGBA graphics escape sequence. Проверить, что картинка видна,
    сохраняет пропорции, не перекрывает prompt, остаётся на месте после resize и
    scrollback, а после выхода из `vim`/`less` не оставляет stale canvas.
+
+Минимальный direct RGB smoke без внешнего image-клиента:
+
+```bash
+printf '\033_Ga=T,f=24,s=1,v=1,c=12,r=6,m=0;AP8A\033\\'
+```
+
+Ожидаемый результат — зелёный прямоугольник примерно `12×6` ячеек. Для
+реальной PNG-картинки используйте Kitty-compatible sender; простой вариант для
+небольшого PNG:
+
+```bash
+printf '\033_Ga=T,f=100;' && base64 -w0 ./image.png && printf '\033\\'
+```
+
+Для больших файлов sender должен разбивать payload на chunk-ы (`m=1` для
+промежуточных и `m=0` для последнего).
 
 Важно: upload-функция Wterm только загружает файл и вставляет путь в shell; она
 не является автоматическим Kitty image preview. Для проверки картинки нужен
