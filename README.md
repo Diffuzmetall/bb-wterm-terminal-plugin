@@ -14,6 +14,9 @@ This repository is an early public preview. The plugin ID is
 The current release is `v0.3.18`. It includes a copy-selection fix for both
 normal shells and TUI sessions.
 
+See [`docs/PORTABILITY.md`](docs/PORTABILITY.md) for a preliminary assessment
+and migration sketch for using the terminal outside BB.
+
 ## Features
 
 - Ghostty terminal emulation through `@wterm/ghostty` 0.5.0 and WebAssembly.
