@@ -28,8 +28,8 @@ describe("decodeOsc52Payload", () => {
 });
 
 describe("copyTextToClipboard", () => {
-  it("copies with execCommand during the gesture even when writeText exists", () => {
-    const writeText = vi.fn(() => Promise.reject(new Error("no activation")));
+  it("uses the Clipboard API even when execCommand reports success", () => {
+    const writeText = vi.fn(() => Promise.resolve());
     const execCommand = vi.fn(() => true);
     const field = {
       value: "",
@@ -48,7 +48,7 @@ describe("copyTextToClipboard", () => {
     copyTextToClipboard("selected");
 
     expect(execCommand).toHaveBeenCalledWith("copy");
-    expect(writeText).not.toHaveBeenCalled();
+    expect(writeText).toHaveBeenCalledWith("selected");
     expect(peekPendingClipboardText()).toBeNull();
   });
 
