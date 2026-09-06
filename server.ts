@@ -11,12 +11,18 @@ import {
 	reconcileLinkedRecords,
 	type LinkedTerminalRecord,
 } from "./linked-terminal-records.js";
+import { hasTerminalParams } from "./session-terminal-composer.js";
 
 export const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MAX_FILE_UPLOAD_BYTES = 25 * 1024 * 1024;
 export const HERDR_TITLE = "Herdr";
 export const HERDR_COMMAND = "herdr";
 export const WTERM_NAV_TITLE = "Wterm";
+const PLUGIN_ID = "wterm-terminal-preview";
+const TERMINAL_PANEL_ACTION_ID = "terminal";
+const TAB_CLOSE_POLL_MS = 150;
+const TAB_CLOSE_MISSING_CONFIRMATIONS = 2;
+const TAB_CLOSE_MAX_POLLS = 3;
 const UPLOAD_PATH = "/upload";
 const WASM_PATH = "/ghostty-vt.wasm";
 const NERD_FONT_PATH = "/symbols-nerd-font-mono-v3.5.0.woff2";
@@ -38,6 +44,7 @@ const legacyScope = (threadId: string) => ({
 	threadId,
 });
 const terminalLinksKey = (threadId: string) => `thread-terminals:${threadId}`;
+const wtermTabsKey = (hostId: string) => `nav-wterm-tabs:${hostId}`;
 const session = z.object({
 	id: z.string(),
 	title: z.string(),
@@ -56,6 +63,13 @@ export const wtermRpcContract = defineRpcContract({
 		input: z.object({ threadId: z.string().min(1) }),
 		output: session,
 	},
+	closeTerminalIfTabMissing: {
+		input: z.object({
+			threadId: z.string().min(1),
+			terminalId: z.string().min(1),
+		}),
+		output: z.boolean(),
+	},
 	restartTerminal: {
 		input: z.object({
 			threadId: z.string().min(1),
@@ -71,8 +85,12 @@ export const wtermRpcContract = defineRpcContract({
 		input: z.object({ terminalId: z.string().min(1) }),
 		output: session,
 	},
-	openWterm: {
+	listWtermTabs: {
 		input: z.object({}),
+		output: z.object({ hostId: z.string(), sessions: z.array(session) }),
+	},
+	openWterm: {
+		input: z.object({ requestId: z.string().min(1).max(128) }),
 		output: session,
 	},
 	closeWterm: {
@@ -190,6 +208,7 @@ export async function readBoundedUploadBody(
 }
 
 const terminalLinkWrites = new Map<string, Promise<void>>();
+const wtermTabWrites = new Map<string, Promise<void>>();
 
 export function createBytesCache(
 	read: () => Promise<Uint8Array | Buffer>,
@@ -311,6 +330,87 @@ async function loadLinkedTerminals(bb: BbPluginApi, threadId: string) {
 	return { sessions, unavailableIds };
 }
 
+type ThreadTab = Awaited<
+	ReturnType<BbPluginApi["sdk"]["threads"]["tabs"]["get"]>
+>["tabs"][number];
+
+export function hasOpenTerminalPanelTab(
+	tabs: readonly ThreadTab[],
+	terminalId: string,
+): boolean {
+	return tabs.some((tab) => {
+		if (
+			tab.kind !== "plugin-panel" ||
+			tab.pluginId !== PLUGIN_ID ||
+			tab.actionId !== TERMINAL_PANEL_ACTION_ID ||
+			tab.paramsJson === null
+		) {
+			return false;
+		}
+		try {
+			const params: unknown = JSON.parse(tab.paramsJson);
+			return hasTerminalParams(params) && params.terminalId === terminalId;
+		} catch {
+			return false;
+		}
+	});
+}
+
+const wait = (milliseconds: number) =>
+	new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+
+async function terminalTabIsConfirmedMissing(
+	bb: BbPluginApi,
+	threadId: string,
+	terminalId: string,
+): Promise<boolean> {
+	let consecutiveMissing = 0;
+	for (let poll = 0; poll < TAB_CLOSE_MAX_POLLS; poll += 1) {
+		await wait(TAB_CLOSE_POLL_MS);
+		try {
+			const { tabs } = await bb.sdk.threads.tabs.get({ threadId });
+			if (hasOpenTerminalPanelTab(tabs, terminalId)) {
+				consecutiveMissing = 0;
+			} else {
+				consecutiveMissing += 1;
+				if (consecutiveMissing >= TAB_CLOSE_MISSING_CONFIRMATIONS) return true;
+			}
+		} catch {
+			consecutiveMissing = 0;
+		}
+	}
+	return false;
+}
+
+async function closeLinkedTerminalIfTabMissing(
+	bb: BbPluginApi,
+	threadId: string,
+	terminalId: string,
+): Promise<boolean> {
+	if (
+		!(await linkedTerminalRecords(bb, threadId)).some(
+			({ id }) => id === terminalId,
+		)
+	) {
+		return false;
+	}
+	if (!(await terminalTabIsConfirmedMissing(bb, threadId, terminalId))) {
+		return false;
+	}
+	return withLinkedTerminalIds(bb, threadId, async (current) => {
+		if (!current.some(({ id }) => id === terminalId)) return false;
+		const { tabs } = await bb.sdk.threads.tabs.get({ threadId });
+		if (hasOpenTerminalPanelTab(tabs, terminalId)) return false;
+		await bb.sdk.terminals.close({ terminalId, mode: "force" });
+		await saveLinkedTerminalRecords(
+			bb,
+			threadId,
+			current.filter(({ id }) => id !== terminalId),
+		);
+		return true;
+	});
+}
+
 async function sessionsForThread(bb: BbPluginApi, threadId: string) {
 	const [legacy, linked] = await Promise.all([
 		bb.sdk.terminals.list({ scope: legacyScope(threadId) }),
@@ -359,7 +459,12 @@ async function resolveUploadTerminal(
 	}
 	try {
 		const session = await bb.sdk.terminals.get({ terminalId });
-		if (!session?.id || !liveNavTerminalSession([session])) {
+		if (
+			!session?.id ||
+			session.threadId !== null ||
+			session.environmentId !== null ||
+			!liveNavTerminalSession([session])
+		) {
 			throw new UploadError(404, "terminal is not an active sidebar session");
 		}
 		return mapSession(session);
@@ -384,7 +489,10 @@ async function handleUpload(
 		if (context.req.raw.signal.aborted) {
 			throw new UploadError(400, "upload aborted");
 		}
-		const target = buildUploadPath(terminal.initialCwd, fileName);
+		if (!terminal.hostId) {
+			throw new UploadError(404, "terminal has no file host");
+		}
+		const target = buildUploadPath(terminal.initialCwd ?? "", fileName);
 		const expectedSha256 = createHash("sha256").update(bytes).digest("hex");
 		const result = await bb.sdk.files.write({
 			hostId: terminal.hostId,
@@ -421,6 +529,111 @@ async function handleUpload(
 	}
 }
 
+type WtermTabRecord = { id: string; requestId: string | null };
+
+function parseWtermTabRecords(value: unknown): WtermTabRecord[] {
+	if (!Array.isArray(value)) return [];
+	const records = new Map<string, WtermTabRecord>();
+	for (const item of value) {
+		const record =
+			typeof item === "string"
+				? { id: item, requestId: null }
+				: typeof item === "object" &&
+						item !== null &&
+						typeof (item as { id?: unknown }).id === "string"
+					? {
+							id: (item as { id: string }).id,
+							requestId:
+								typeof (item as { requestId?: unknown }).requestId === "string"
+									? (item as { requestId: string }).requestId
+									: null,
+						}
+					: null;
+		if (record?.id) records.set(record.id, record);
+	}
+	return [...records.values()];
+}
+
+async function withWtermTabRecords<Value>(
+	bb: BbPluginApi,
+	hostId: string,
+	update: (current: WtermTabRecord[]) => Promise<Value>,
+): Promise<Value> {
+	const key = wtermTabsKey(hostId);
+	const previous = wtermTabWrites.get(key) ?? Promise.resolve();
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const queued = previous.then(() => gate);
+	wtermTabWrites.set(key, queued);
+	await previous;
+	try {
+		return await update(parseWtermTabRecords(await bb.storage.kv.get(key)));
+	} finally {
+		release();
+		if (wtermTabWrites.get(key) === queued) wtermTabWrites.delete(key);
+	}
+}
+
+async function saveWtermTabRecords(
+	bb: BbPluginApi,
+	hostId: string,
+	records: readonly WtermTabRecord[],
+): Promise<void> {
+	await bb.storage.kv.set(wtermTabsKey(hostId), records);
+}
+
+function unavailableWtermSession(terminalId: string, hostId: string): Session {
+	return {
+		id: terminalId,
+		title: WTERM_NAV_TITLE,
+		initialCwd: null,
+		hostId,
+		status: "unavailable",
+		updatedAt: 0,
+		lastUserInputAt: null,
+	};
+}
+
+function isOwnedWtermTerminal(
+	terminal: {
+		id: string;
+		hostId?: string | null;
+		threadId?: string | null;
+		environmentId?: string | null;
+	},
+	terminalId: string,
+	hostId: string,
+): boolean {
+	return (
+		terminal.id === terminalId &&
+		terminal.hostId === hostId &&
+		terminal.threadId === null &&
+		terminal.environmentId === null
+	);
+}
+
+async function loadWtermTabs(
+	bb: BbPluginApi,
+	hostId: string,
+): Promise<Session[]> {
+	return withWtermTabRecords(bb, hostId, async (records) =>
+		Promise.all(
+			records.map(async ({ id }) => {
+				try {
+					const terminal = await bb.sdk.terminals.get({ terminalId: id });
+					return isOwnedWtermTerminal(terminal, id, hostId)
+						? mapSession(terminal)
+						: unavailableWtermSession(id, hostId);
+				} catch {
+					return unavailableWtermSession(id, hostId);
+				}
+			}),
+		),
+	);
+}
+
 export function pickConnectedHostId(
 	hosts: readonly { id: string; status: string }[],
 ): string {
@@ -444,7 +657,7 @@ export function liveNavTerminalSession<
 function mapSession(value: {
 	id: string;
 	title: string;
-	initialCwd: string;
+	initialCwd?: string | null;
 	hostId?: string;
 	status: string;
 	updatedAt: number;
@@ -453,7 +666,7 @@ function mapSession(value: {
 	return {
 		id: value.id,
 		title: value.title,
-		initialCwd: value.initialCwd,
+		initialCwd: value.initialCwd ?? "",
 		hostId: value.hostId ?? null,
 		status: value.status,
 		updatedAt: value.updatedAt,
@@ -513,6 +726,9 @@ export default function plugin(bb: BbPluginApi) {
 			await rememberLinkedTerminal(bb, threadId, result.id);
 			return mapSession(result);
 		},
+		async closeTerminalIfTabMissing({ threadId, terminalId }) {
+			return closeLinkedTerminalIfTabMissing(bb, threadId, terminalId);
+		},
 		async openHerdr() {
 			const hostId = pickConnectedHostId(await bb.sdk.hosts.list());
 			return mapSession(
@@ -527,39 +743,73 @@ export default function plugin(bb: BbPluginApi) {
 		},
 		async closeHerdr({ terminalId }) {
 			const terminal = await bb.sdk.terminals.get({ terminalId });
-			if (
-				terminal.title !== HERDR_TITLE ||
-				!liveNavTerminalSession([terminal])
-			) {
+			if (terminal.title !== HERDR_TITLE || !liveNavTerminalSession([terminal])) {
 				throw new Error("Terminal is not an active Herdr session");
 			}
 			return mapSession(
 				await bb.sdk.terminals.close({ terminalId, mode: "force" }),
 			);
 		},
-		async openWterm() {
+		async listWtermTabs() {
 			const hostId = pickConnectedHostId(await bb.sdk.hosts.list());
-			return mapSession(
-				await bb.sdk.terminals.create({
+			return { hostId, sessions: await loadWtermTabs(bb, hostId) };
+		},
+		async openWterm({ requestId }) {
+			const hostId = pickConnectedHostId(await bb.sdk.hosts.list());
+			return withWtermTabRecords(bb, hostId, async (records) => {
+				const existing = records.find((record) => record.requestId === requestId);
+				if (existing) {
+					try {
+						const terminal = await bb.sdk.terminals.get({ terminalId: existing.id });
+						return isOwnedWtermTerminal(terminal, existing.id, hostId)
+							? mapSession(terminal)
+							: unavailableWtermSession(existing.id, hostId);
+					} catch {
+						return unavailableWtermSession(existing.id, hostId);
+					}
+				}
+				const terminal = await bb.sdk.terminals.create({
 					scope: { kind: "host_path", hostId, cwd: null },
 					cols: 80,
 					rows: 24,
 					start: { mode: "shell" },
 					title: WTERM_NAV_TITLE,
-				}),
-			);
+				});
+				try {
+					await saveWtermTabRecords(bb, hostId, [
+						...records,
+						{ id: terminal.id, requestId },
+					]);
+				} catch (error) {
+					await bb.sdk.terminals
+						.close({ terminalId: terminal.id, mode: "force" })
+						.catch(() => undefined);
+					throw error;
+				}
+				return mapSession(terminal);
+			});
 		},
 		async closeWterm({ terminalId }) {
-			const terminal = await bb.sdk.terminals.get({ terminalId });
-			if (
-				terminal.title !== WTERM_NAV_TITLE ||
-				!liveNavTerminalSession([terminal])
-			) {
-				throw new Error("Terminal is not an active Wterm session");
-			}
-			return mapSession(
-				await bb.sdk.terminals.close({ terminalId, mode: "force" }),
-			);
+			const hostId = pickConnectedHostId(await bb.sdk.hosts.list());
+			return withWtermTabRecords(bb, hostId, async (records) => {
+				if (!records.some((record) => record.id === terminalId)) {
+					throw new Error("Terminal is not owned by this Wterm workspace");
+				}
+				const terminal = await bb.sdk.terminals.get({ terminalId });
+				if (!isOwnedWtermTerminal(terminal, terminalId, hostId)) {
+					throw new Error("Terminal is not owned by this Wterm workspace");
+				}
+				const closed =
+					terminal.status === "running" || terminal.status === "starting"
+						? await bb.sdk.terminals.close({ terminalId, mode: "force" })
+						: terminal;
+				await saveWtermTabRecords(
+					bb,
+					hostId,
+					records.filter((record) => record.id !== terminalId),
+				);
+				return mapSession(closed);
+			});
 		},
 		async restartTerminal({ threadId, terminalId }) {
 			const sessions = await sessionsForThread(bb, threadId);
@@ -588,25 +838,35 @@ export default function plugin(bb: BbPluginApi) {
 		"GET",
 		WASM_PATH,
 		async () =>
-			new Response(await ghosttyWasmBytes(), {
-				headers: {
-					"cache-control": "public, max-age=31536000, immutable",
-					"content-type": "application/wasm",
+			new Response(
+				// SAFETY: Response accepts the binary asset body at runtime; DOM's
+				// BodyInit declaration does not include Uint8Array<ArrayBufferLike>.
+				(await ghosttyWasmBytes()) as unknown as BodyInit,
+				{
+					headers: {
+						"cache-control": "public, max-age=31536000, immutable",
+						"content-type": "application/wasm",
+					},
 				},
-			}),
+			),
 		{ auth: "token" },
 	);
 	bb.http.route(
 		"GET",
 		NERD_FONT_PATH,
 		async () =>
-			new Response(await nerdFontBytes(), {
-				headers: {
-					"cache-control": "public, max-age=31536000, immutable",
-					"content-type": "font/woff2",
-					"x-content-type-options": "nosniff",
+			new Response(
+				// SAFETY: Response accepts the binary asset body at runtime; DOM's
+				// BodyInit declaration does not include Uint8Array<ArrayBufferLike>.
+				(await nerdFontBytes()) as unknown as BodyInit,
+				{
+					headers: {
+						"cache-control": "public, max-age=31536000, immutable",
+						"content-type": "font/woff2",
+						"x-content-type-options": "nosniff",
+					},
 				},
-			}),
+			),
 		{ auth: "token" },
 	);
 }
