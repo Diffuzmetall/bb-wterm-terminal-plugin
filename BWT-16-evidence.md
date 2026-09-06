@@ -23,7 +23,9 @@ That made short selections work while a sentence dragged to the edge or past the
 - `git diff --check`: passed.
 - `ubs terminal-selection.ts terminal-selection.test.ts wterm-renderer.tsx osc52-clipboard.test.ts`: no findings reported.
 - Headless Chromium `Range` check: the unscoped range included `outside`, while the clipped range returned only `one two three four five`; console and page errors were empty.
+- The fixed worktree was installed on the active VPS BB host. Plugin status was `running`, `errorCount` was `0`, and the bundle hash was `13fc7c9f6506cf31` with SDK `0.4.34`.
+- A live thread-scoped PTY returned through Wterm `listSessions`; its output contained the complete marker `BWT16_COPY_SENTENCE one two three four five`. The test PTY then exited cleanly with code `0`.
 
 ## Remaining live check
 
-The active VPS BB UI was reachable, but the installed Wterm plugin reported `rpc listSessions failed: fetch failed`, so an authenticated Herdr/PTTY drag could not be reproduced in the live browser during this run. The source-level and browser DOM checks are complete; production installation and live Herdr smoke still require a healthy PTY RPC.
+The active VPS BB UI was reachable and the Wterm plugin/backend RPC was healthy, but the Wterm canvas was not exposed as a panel action in the current thread UI. Therefore an authenticated pointer drag against the rendered canvas was not reproduced in the live browser during this run. Source-level, DOM, bundle, and PTY RPC checks are complete; the remaining check is manual drag/copy inside the visible Herdr canvas.
