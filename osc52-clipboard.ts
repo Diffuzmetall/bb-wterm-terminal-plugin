@@ -71,11 +71,11 @@ export function queueClipboardText(text: string): void {
 export function copyTextToClipboard(text: string): void {
   if (text.length === 0) return;
   pendingClipboardText = text;
-  if (copyWithExecCommand(text)) {
-    pendingClipboardText = null;
-    return;
-  }
+  const copiedWithExecCommand = copyWithExecCommand(text);
   queueClipboardText(text);
+  if (copiedWithExecCommand) {
+    pendingClipboardText = null;
+  }
 }
 
 export function flushPendingClipboardCopy(): void {

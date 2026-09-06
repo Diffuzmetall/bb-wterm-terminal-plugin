@@ -130,6 +130,9 @@ Make the installed Wterm preview in the BB web app open quickly, stay visually s
 | ISC-55 | unit | renderer cleanup | one core dispose at most once | Vitest | derived: lifecycle |
 | ISC-56 | command | regression suite and plugin build | exit 0 | npm + Vitest + bb | derived: no regression |
 | ISC-57 | e2e/manual | headed Kitty image PTY smoke | geometry, flow, resize, scrollback, alternate screen clean | agent-browser / BB web | required: live confirmation |
+| ISC-58 | unit | clipboard API still runs when legacy `execCommand("copy")` reports success | both copy paths invoked with the same sentence | Vitest | derived: false-positive legacy copy |
+| ISC-59 | e2e | Herdr long drag with injected no-op `execCommand → true` | clipboard sentinel replaced by selected row through `writeText` | agent-browser / BB web | literal: copy-on-select |
+| ISC-60 | anti | native Chromium short, long, and edge drag remain correct | selected terminal text only; no surrounding BB text | agent-browser / BB web | derived: no copy regression |
 | ISC-43 | unit | composer uses real `wtermOpenCount`; helper `resolveSessionTerminalId` takes `openTabCount` | openTabCount>0 does not reuse last; live composer reveals or creates, never last-id on a new tab | Vitest | derived: new tab is new PTY |
 | ISC-31 | unit | replay insert stays ordered without full re-sort each chunk | flush order = seq | Vitest | derived: quickly |
 | ISC-32 | anti | upload/auth/order tests still pass after speed slices | `npm test` green including server + attachment | Vitest | literal |
@@ -271,6 +274,16 @@ adaptations while delegating image placement to upstream.
 - [ ] ISC-57: headed BB PTY smoke for geometry, implicit flow, resize, scrollback,
   and alternate screen remains blocked until BB/plugin runtime is available.
 
+### F11 · BWT-16 clipboard truth
+
+Why: `document.execCommand("copy")` is legacy and can return `true` without
+changing the OS clipboard. Herdr copy-on-select must also use the modern
+Clipboard API instead of treating that boolean as proof of delivery.
+
+- [x] ISC-58: direct selection copy invokes both legacy and modern clipboard paths with the same complete sentence.
+- [x] ISC-59: in production Chromium, a no-op `execCommand → true` cannot leave the pre-seeded clipboard sentinel after a long Herdr drag.
+- [x] ISC-60: normal short, long, and right-edge Herdr drags still copy terminal text only.
+
 ## Anti-claims
 
 - Anti: tests do not depend on the sibling BB workspace at runtime.
@@ -279,6 +292,7 @@ adaptations while delegating image placement to upstream.
 - Anti: missing `experimental_primarySurface` still opens side panel or picker rather than crashing.
 - Anti: new modules do not import paths outside this repository.
 - Anti: `LegacyTerminalAction` (and any host path) must not treat localStorage last-id as the identity of a newly opened tab when host params have no terminalId.
+- Anti: a truthy legacy `execCommand("copy")` result must not suppress the modern Clipboard API write.
 
 ## Decisions
 
@@ -298,6 +312,7 @@ adaptations while delegating image placement to upstream.
 - 2026-09-04: BWT-4 reproduction showed two PTY resizes during BB's 220ms maximize transition. Keep local Wterm auto-resize responsive, but debounce SIGWINCH delivery for 250ms and record only delivered geometry.
 - 2026-09-04: Herdr click transport is not the bottleneck: click → WebSocket input measured 0.3–2.9ms, while the multi-chunk PTY redraw completed around 99–111ms. The actionable compatibility defect was the local 1003 → 1002 downgrade: add only missing no-button SGR motion, deduplicated by terminal cell; do not invent a broader renderer/WebSocket optimization.
 - 2026-09-05: Wterm v0.5.0 is the Kitty Graphics boundary. Use its `imageStorageLimit`, geometry responses, surface-bounded DOM overlays, and implicit-flow handling; keep BB-specific transport and selection wrappers. Do not invent app-level image dimensions before headed evidence.
+- 2026-09-06: BWT-16 user report reopens clipboard delivery. Headed Herdr reproduced the false-success class by replacing `execCommand` with a no-op returning `true`: the copy toast/path ran, `navigator.clipboard.writeText` was skipped, and the seeded clipboard sentinel remained. Keep the synchronous path, but never use its boolean to suppress the modern write.
 
 ## Learning
 
@@ -338,3 +353,4 @@ adaptations while delegating image placement to upstream.
 - ISC-53/54: direct Kitty RGB integration exposes one image/placement; renderer option and lifecycle tests cover bounded storage/palette and upstream image-surface delegation (2026-09-05).
 - ISC-55/56: idempotent `dispose()` seam test and full `npm test` 14 files / 115 tests plus `npm run build` pass (2026-09-05).
 - ISC-57: headed BB smoke remains unverified because `bb plugin dev` and the active BB endpoint return HTTP 502 (2026-09-05).
+- ISC-58/59/60: red test proved a truthy legacy result suppressed `writeText`; post-fix full suite 14 files / 120 tests and build pass. Production bundle `54750960f06c5eb2` on the active VPS replaced an injected `BWT16_FALSE_POSITIVE_SENTINEL` with the complete Herdr row through `writeText`; normal short drag copied `- Данные`, and right-edge drag copied the complete terminal row without surrounding BB text. Browser console and page errors were empty (2026-09-06).
