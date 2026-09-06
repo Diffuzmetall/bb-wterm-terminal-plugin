@@ -56,8 +56,8 @@ function createPluginHarness() {
   const route = vi.fn();
   const terminal = {
     id: "term-1",
-    threadId: "thread-1" as string | null,
-    environmentId: "environment-1" as string | null,
+    threadId: "thread-1",
+    environmentId: "environment-1",
     hostId: "remote-host",
     title: "Shell",
     initialCwd: "/workspace",
@@ -164,7 +164,6 @@ describe("Wterm server boundaries", () => {
     expect(Object.keys(wtermRpcContract)).toEqual([
       "listSessions",
       "createTerminal",
-      "closeTerminalIfTabMissing",
       "restartTerminal",
       "openHerdr",
       "closeHerdr",
@@ -558,140 +557,6 @@ describe("Wterm server boundaries", () => {
     expect(restart).toHaveBeenCalledWith({ terminalId: "term-1" });
   });
 
-  it("closes only a linked terminal whose plugin tab is confirmed absent", async () => {
-    vi.useFakeTimers();
-    try {
-      const register = vi.fn();
-      const openTab = {
-        id: "plugin:wterm",
-        kind: "plugin-panel",
-        pluginId: "wterm-terminal-preview",
-        actionId: "terminal",
-        title: "Wterm terminal",
-        paramsJson: JSON.stringify({
-          schemaVersion: 1,
-          terminalId: "term-environment",
-        }),
-      };
-      const tabsGet = vi
-        .fn()
-        .mockResolvedValueOnce({ revision: 1, tabs: [openTab] })
-        .mockResolvedValue({ revision: 2, tabs: [] });
-      const close = vi.fn().mockResolvedValue({
-        id: "term-environment",
-        title: "Wterm terminal",
-        initialCwd: "/workspace",
-        status: "exited",
-        updatedAt: 21,
-      });
-      let linkedRecords = [
-        { id: "term-environment", firstUnavailableAt: null },
-      ];
-      const kvGet = vi.fn(async () => linkedRecords);
-      const kvSet = vi.fn(
-        async (_key: string, records: typeof linkedRecords) => {
-          linkedRecords = records;
-        },
-      );
-      const bb = {
-        http: { route: vi.fn() },
-        rpc: { register },
-        storage: { kv: { get: kvGet, set: kvSet } },
-        sdk: {
-          threads: { tabs: { get: tabsGet } },
-          terminals: { close },
-        },
-      } as never;
-      plugin(bb);
-      const handlers = register.mock.calls[0]?.[1];
-
-      const closing = handlers.closeTerminalIfTabMissing({
-        threadId: "thread-1",
-        terminalId: "term-environment",
-      });
-      await vi.advanceTimersByTimeAsync(1_000);
-      await expect(closing).resolves.toBe(true);
-      expect(close).toHaveBeenCalledOnce();
-      expect(close).toHaveBeenCalledWith({
-        terminalId: "term-environment",
-        mode: "force",
-      });
-      expect(kvSet).toHaveBeenCalledWith("thread-terminals:thread-1", []);
-
-      tabsGet.mockClear();
-      close.mockClear();
-      kvSet.mockClear();
-      const unlinked = handlers.closeTerminalIfTabMissing({
-        threadId: "thread-1",
-        terminalId: "term-environment",
-      });
-      await vi.advanceTimersByTimeAsync(1_000);
-      await expect(unlinked).resolves.toBe(false);
-      expect(tabsGet).not.toHaveBeenCalled();
-      expect(close).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("does not close a linked terminal while its plugin tab still exists", async () => {
-    vi.useFakeTimers();
-    try {
-      const register = vi.fn();
-      const openTabs = {
-        revision: 1,
-        tabs: [
-          {
-            id: "plugin:wterm",
-            kind: "plugin-panel",
-            pluginId: "wterm-terminal-preview",
-            actionId: "terminal",
-            title: "Wterm terminal",
-            paramsJson: JSON.stringify({
-              schemaVersion: 1,
-              terminalId: "term-environment",
-            }),
-          },
-        ],
-      };
-      const tabsGet = vi
-        .fn()
-        .mockResolvedValueOnce({ revision: 0, tabs: [] })
-        .mockResolvedValue(openTabs);
-      const close = vi.fn();
-      const bb = {
-        http: { route: vi.fn() },
-        rpc: { register },
-        storage: {
-          kv: {
-            get: vi
-              .fn()
-              .mockResolvedValue([
-                { id: "term-environment", firstUnavailableAt: null },
-              ]),
-            set: vi.fn(),
-          },
-        },
-        sdk: {
-          threads: { tabs: { get: tabsGet } },
-          terminals: { close },
-        },
-      } as never;
-      plugin(bb);
-      const handlers = register.mock.calls[0]?.[1];
-
-      const closing = handlers.closeTerminalIfTabMissing({
-        threadId: "thread-1",
-        terminalId: "term-environment",
-      });
-      await vi.advanceTimersByTimeAsync(1_000);
-      await expect(closing).resolves.toBe(false);
-      expect(close).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it("lists and restarts terminals linked from the thread to its environment", async () => {
     const register = vi.fn();
     const linked = {
@@ -892,7 +757,9 @@ describe("Wterm server boundaries", () => {
       ([method, path]) => method === "POST" && path === "/upload",
     )?.[2] as (context: unknown) => Promise<Response>;
 
-    const response = await upload(uploadContext({ terminalId: "term-zombie" }));
+    const response = await upload(
+      uploadContext({ terminalId: "term-zombie" }),
+    );
     expect(response.status).toBe(404);
     expect(write).not.toHaveBeenCalled();
   });
@@ -955,16 +822,9 @@ describe("Wterm server boundaries", () => {
     harness.get.mockResolvedValue({
       id: "term-herdr",
       title: "Herdr",
-      threadId: null,
-      environmentId: null,
       initialCwd: "/home/ubuntu",
-      cols: 80,
-      rows: 24,
       hostId: "remote-host",
       status: "running",
-      exitCode: null,
-      closeReason: null,
-      createdAt: 1,
       updatedAt: 2,
       lastUserInputAt: null,
     });
@@ -997,39 +857,6 @@ describe("Wterm server boundaries", () => {
     expect(response.status).toBe(404);
     expect(harness.write).not.toHaveBeenCalled();
   });
-
-  it.each([
-    ["thread-scoped", "thread-1", null],
-    ["environment-scoped", null, "environment-1"],
-  ])(
-    "rejects threadless uploads for %s sessions before host write",
-    async (_scope, threadId, environmentId) => {
-      const harness = createPluginHarness();
-      harness.get.mockResolvedValue({
-        id: "term-scoped",
-        title: "Herdr",
-        threadId,
-        environmentId,
-        initialCwd: "/home/ubuntu",
-        cols: 80,
-        rows: 24,
-        hostId: "remote-host",
-        status: "running",
-        exitCode: null,
-        closeReason: null,
-        createdAt: 1,
-        updatedAt: 2,
-        lastUserInputAt: null,
-      });
-
-      const response = await harness.upload(
-        uploadContext({ terminalId: "term-scoped", threadId: "" }),
-      );
-
-      expect(response.status).toBe(404);
-      expect(harness.write).not.toHaveBeenCalled();
-    },
-  );
 
   it("rejects cross-thread, oversized, and aborted uploads before host write", async () => {
     const harness = createPluginHarness();
