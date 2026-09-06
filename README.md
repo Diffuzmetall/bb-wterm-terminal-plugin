@@ -11,8 +11,8 @@ This repository is an early public preview. The plugin ID is
 `wterm-terminal-preview`, so it can coexist with BB's bundled
 `wterm-terminal` while the integration is evaluated.
 
-The current release is `v0.3.18`. It includes a copy-selection fix for both
-normal shells and TUI sessions.
+The current release is `v0.4.0`. It adds clickable OSC 8 web/file links,
+bounded Kitty Graphics rendering, and optional full-page Herdr/Wterm launchers.
 
 See [`docs/PORTABILITY.md`](docs/PORTABILITY.md) for a preliminary assessment
 and migration sketch for using the terminal outside BB.
@@ -56,7 +56,7 @@ and migration sketch for using the terminal outside BB.
 Install the pinned release:
 
 ```sh
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.18' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.4.0' --yes
 bb plugin source wterm-terminal-preview
 ```
 
@@ -89,7 +89,7 @@ installed release explicitly:
 
 ```sh
 bb plugin remove wterm-terminal-preview
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.3.18' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.4.0' --yes
 bb plugin source wterm-terminal-preview
 ```
 
@@ -140,6 +140,41 @@ SSH client.
 Uploads are stored under `<terminal cwd>/.bb-wterm-uploads/` with randomized
 names and mode `0600`. The plugin verifies the returned size and SHA-256 before
 inserting the path. Images are limited to 10 MiB and other files to 25 MiB.
+
+### Hyperlinks and Kitty Graphics
+
+OSC 8 links emitted by programs inside Wterm are clickable. HTTP(S) links open
+through BB's browser preference; absolute `file://` links open in BB Files/file
+preview. The target must be reachable through the current BB host/workspace.
+
+Test a web link:
+
+```sh
+printf '\033]8;;https://example.com\033\\WEB_TEST\033]8;;\033\\\n'
+```
+
+Test a file link by replacing the path with an existing host file:
+
+```sh
+printf '\033]8;;file:///absolute/path/to/README.md\033\\FILE_TEST\033]8;;\033\\\n'
+```
+
+Wterm also accepts direct Kitty Graphics PNG/RGB/RGBA sequences. A minimal RGB
+smoke test that displays a green rectangle is:
+
+```sh
+printf '\033_Ga=T,f=24,s=1,v=1,c=12,r=6,m=0;AP8A\033\\'
+```
+
+Uploading an image does not automatically display it as Kitty Graphics: upload
+stores the file and inserts its path in the shell. A Kitty-compatible client
+must send the graphics escape sequence, for example for a small PNG:
+
+```sh
+printf '\033_Ga=T,f=100;' && base64 -w0 ./image.png && printf '\033\\'
+```
+
+Large PNG payloads must be chunked according to the Kitty Graphics protocol.
 
 ## Manage the plugin
 
