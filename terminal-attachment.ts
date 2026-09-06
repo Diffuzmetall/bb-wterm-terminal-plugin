@@ -351,7 +351,6 @@ function parseTerminalServerMessage(
 }
 
 export function decodeBase64(value: string): Uint8Array {
-  // SAFETY: Uint8Array.fromBase64 is an optional native method with this shape.
   const fromBase64 = (
     Uint8Array as unknown as {
       fromBase64?: (input: string) => Uint8Array;
