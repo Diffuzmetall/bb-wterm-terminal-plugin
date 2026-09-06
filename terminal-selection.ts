@@ -24,6 +24,53 @@ export interface ViewportTextSource {
   getRows(): number;
 }
 
+export interface TerminalDomSelection<NodeValue> {
+  getRangeAt(index: number): {
+    cloneRange?(): {
+      setEnd(container: NodeValue, offset: number): void;
+      setStart(container: NodeValue, offset: number): void;
+      toString(): string;
+    };
+    endContainer: NodeValue;
+    startContainer: NodeValue;
+  };
+  isCollapsed: boolean;
+  rangeCount: number;
+  toString(): string;
+}
+
+/** Return selected terminal text, clipped when a drag ends outside it. */
+export function selectedTerminalText<NodeValue>(
+  terminal: {
+    childNodes?: { length: number };
+    contains(node: NodeValue): boolean;
+  },
+  selection: TerminalDomSelection<NodeValue> | null,
+): string | null {
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return null;
+  }
+  const range = selection.getRangeAt(0);
+  const startInside = terminal.contains(range.startContainer);
+  const endInside = terminal.contains(range.endContainer);
+  if (!startInside && !endInside) {
+    return null;
+  }
+  let text = selection.toString();
+  if (startInside !== endInside) {
+    const scopedRange = range.cloneRange?.();
+    const terminalLength = terminal.childNodes?.length;
+    if (!scopedRange || terminalLength === undefined) return null;
+    if (startInside) {
+      scopedRange.setEnd(terminal as NodeValue, terminalLength);
+    } else {
+      scopedRange.setStart(terminal as NodeValue, 0);
+    }
+    text = scopedRange.toString();
+  }
+  return text.length > 0 ? text : null;
+}
+
 export function cellAtPoint(
   layout: CellLayout,
   clientX: number,
@@ -37,6 +84,21 @@ export function cellAtPoint(
     return null;
   }
   return { col, row };
+}
+
+export function cellAtPointClamped(
+  layout: CellLayout,
+  clientX: number,
+  clientY: number,
+): GridPoint | null {
+  if (layout.charWidth <= 0 || layout.rowHeight <= 0) return null;
+  if (layout.cols <= 0 || layout.rows <= 0) return null;
+  const col = Math.floor((clientX - layout.originLeft) / layout.charWidth);
+  const row = Math.floor((clientY - layout.originTop) / layout.rowHeight);
+  return {
+    col: Math.max(0, Math.min(layout.cols - 1, col)),
+    row: Math.max(0, Math.min(layout.rows - 1, row)),
+  };
 }
 
 export function cellText(cell: SelectionCell): string {

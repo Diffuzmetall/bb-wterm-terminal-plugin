@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   cellAtPoint,
+  cellAtPointClamped,
   extractViewportText,
+  selectedTerminalText,
   selectionMoved,
   type SelectionCell,
 } from "./terminal-selection";
@@ -40,6 +42,11 @@ describe("cellAtPoint", () => {
   it("rejects points outside the grid", () => {
     expect(cellAtPoint(layout, 99, 71)).toBeNull();
     expect(cellAtPoint(layout, 121, 200)).toBeNull();
+  });
+
+  it("clamps a drag endpoint to the nearest cell", () => {
+    expect(cellAtPointClamped(layout, 200, 200)).toEqual({ col: 7, row: 3 });
+    expect(cellAtPointClamped(layout, 99, 49)).toEqual({ col: 0, row: 0 });
   });
 });
 
@@ -80,5 +87,57 @@ describe("selectionMoved", () => {
     expect(
       selectionMoved({ col: 1, row: 1 }, { col: 2, row: 1 }),
     ).toBe(true);
+  });
+});
+
+describe("selectedTerminalText", () => {
+  function fixture({
+    end = "inside",
+    start = "inside",
+    scopedText = "selected text",
+    text = scopedText,
+  } = {}) {
+    return {
+      selection: {
+        getRangeAt: () => ({
+          cloneRange: () => ({
+            setEnd: () => undefined,
+            setStart: () => undefined,
+            toString: () => scopedText,
+          }),
+          endContainer: end,
+          startContainer: start,
+        }),
+        isCollapsed: false,
+        rangeCount: 1,
+        toString: () => text,
+      },
+      terminal: {
+        childNodes: { length: 1 },
+        contains: (node: string) => node === "inside",
+      },
+    };
+  }
+
+  it("returns text when the full range is inside the terminal", () => {
+    const sample = fixture();
+    expect(selectedTerminalText(sample.terminal, sample.selection)).toBe(
+      "selected text",
+    );
+    expect(
+      selectedTerminalText(
+        sample.terminal,
+        fixture({
+          end: "outside",
+          scopedText: "terminal text",
+          text: "outside plus terminal",
+        }).selection,
+      ),
+    ).toBe("terminal text");
+  });
+
+  it("ignores a selection that belongs to the surrounding page", () => {
+    const sample = fixture({ start: "outside", end: "outside" });
+    expect(selectedTerminalText(sample.terminal, sample.selection)).toBeNull();
   });
 });

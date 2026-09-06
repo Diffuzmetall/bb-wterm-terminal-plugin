@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ClipboardEvent as ReactClipboardEvent,
   type MouseEvent as ReactMouseEvent,
   type UIEvent as ReactUIEvent,
   type WheelEvent as ReactWheelEvent,
@@ -20,7 +21,9 @@ import {
 import { createRetryablePromiseCache } from "./retryable-cache.js";
 import {
   cellAtPoint,
+  cellAtPointClamped,
   extractViewportText,
+  selectedTerminalText,
   selectionMoved,
   type CellLayout,
   type GridPoint,
@@ -510,13 +513,13 @@ export function WtermRenderer({
         }
       };
       const finishSelection = () => {
-        clearBoundary();
         const selection = window.getSelection();
-        if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
-          return;
-        }
-        const text = selection.toString();
-        if (text.length > 0) copyTextToClipboard(text);
+        const text = selectedTerminalText(
+          terminalRef.current?.instance?.element ?? selectionRoot,
+          selection,
+        );
+        clearBoundary();
+        if (text) copyTextToClipboard(text);
       };
 
       clearSelectionBoundaryRef.current = clearBoundary;
@@ -550,8 +553,8 @@ export function WtermRenderer({
         const drag = tuiDragRef.current;
         tuiDragRef.current = null;
         if (!drag || up.button !== 0) return;
-        const end = cellAtPoint(drag.layout, up.clientX, up.clientY);
-        if (!end || !selectionMoved(drag.start, end)) return;
+        const end = cellAtPointClamped(drag.layout, up.clientX, up.clientY);
+        if (!selectionMoved(drag.start, end)) return;
         const text = extractViewportText(bridge, drag.start, end);
         if (text.length > 0) copyTextToClipboard(text);
       };
@@ -564,6 +567,23 @@ export function WtermRenderer({
       };
       tuiCopyDragCleanupRef.current = cleanup;
       window.addEventListener("mouseup", finish);
+    },
+    [],
+  );
+
+  const handleCopy = useCallback(
+    (event: ReactClipboardEvent<HTMLDivElement>) => {
+      const text = selectedTerminalText(
+        terminalRef.current?.instance?.element ?? event.currentTarget,
+        window.getSelection(),
+      );
+      if (!text) return;
+
+      // BB owns copy handlers around plugin surfaces. Stop the event at the
+      // terminal boundary so it cannot serialize the surrounding message row.
+      event.preventDefault();
+      event.stopPropagation();
+      event.clipboardData.setData("text/plain", text);
     },
     [],
   );
@@ -764,6 +784,7 @@ export function WtermRenderer({
         lastAnyEventCellRef.current = null;
       }}
       onWheelCapture={handleWheelCapture}
+      onCopyCapture={handleCopy}
       style={terminalFontStyle}
       className="wterm-renderer"
       data-renderer="ghostty"

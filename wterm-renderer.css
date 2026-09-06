@@ -21,6 +21,16 @@
  box-shadow: none !important;
 }
 
+/* Keep terminal spans character-selectable even inside BB surfaces that
+ * disable selection. Mouse-tracking TUIs still prevent native gestures. */
+.wterm-renderer .term-row,
+.wterm-renderer .term-row > span,
+.wterm-renderer .term-row > .term-link,
+.wterm-renderer .term-link > span {
+ -webkit-user-select: text !important;
+ user-select: text !important;
+}
+
 .wterm-renderer--loading {
  background: var(--term-bg, #1e1e1e);
 }
