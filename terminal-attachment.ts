@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { markWtermPerformance, wtermPerformance } from "./wterm-performance.ts";
 
 export interface TerminalAttachmentChunk {
   seq: number;
@@ -35,6 +36,7 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
   private attachedNextSeq: number | null = null;
   private detached = false;
   private lastDeliveredSeq = -1;
+  private deliveredCount = 0;
   private lastResizeCols = 0;
   private lastResizeRows = 0;
   private reconnectAttempts = 0;
@@ -46,6 +48,7 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
   private readonly pendingBeforeSubscribe: TerminalAttachmentChunk[] = [];
   private readonly pendingInputs: string[] = [];
   private readonly pendingLive = new Map<number, OutputChunk>();
+  private pendingEchoCount = 0;
   private pendingReplay: OutputChunk[] = [];
   private pendingResize: string | null = null;
   private socket: WebSocket | null = null;
@@ -73,6 +76,7 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
     };
     socket.onopen = () => {
       if (this.socket !== socket) return;
+      markWtermPerformance("ws-open");
       this.reconnectAttempts = 0;
       this.flushPendingSends(socket);
     };
@@ -91,9 +95,14 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
   }
 
   sendInput(bytes: Uint8Array): boolean {
-    return this.sendInputMessage(
+    const accepted = this.sendInputMessage(
       JSON.stringify({ type: "input", dataBase64: encodeBase64(bytes) }),
     );
+    if (accepted) {
+      markWtermPerformance("send", { bytes: bytes.byteLength });
+      if (wtermPerformance.enabled) this.pendingEchoCount += 1;
+    }
+    return accepted;
   }
 
   sendResize(cols: number, rows: number): boolean {
@@ -128,6 +137,7 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
     this.pendingBeforeSubscribe.length = 0;
     this.pendingInputs.length = 0;
     this.pendingLive.clear();
+    this.pendingEchoCount = 0;
     this.pendingReplay = [];
     this.pendingResize = null;
   }
@@ -136,6 +146,7 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
     const message = parseTerminalServerMessage(raw);
     if (!message) return;
     if (message.type === "attached") {
+      markWtermPerformance("attached", { seq: message.nextSeq });
       this.attachedNextSeq = message.nextSeq;
       for (const chunk of this.pendingBeforeAttach.values()) {
         this.pendingLive.set(chunk.seq, chunk);
@@ -193,12 +204,32 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
     );
     this.pendingLive.clear();
     for (const chunk of live) this.deliver(chunk);
+    markWtermPerformance("replay-complete", {
+      seq: this.attachedNextSeq,
+      count: this.deliveredCount,
+    });
   }
 
   private deliver(chunk: OutputChunk): void {
     if (chunk.seq <= this.lastDeliveredSeq) return;
     this.lastDeliveredSeq = chunk.seq;
     const decoded = { seq: chunk.seq, bytes: decodeBase64(chunk.dataBase64) };
+    this.deliveredCount += 1;
+    const metadata = {
+      seq: decoded.seq,
+      bytes: decoded.bytes.byteLength,
+      count: this.deliveredCount,
+    };
+    markWtermPerformance("delivered", metadata);
+    if (this.pendingEchoCount > 0) {
+      const inputCount = this.pendingEchoCount;
+      this.pendingEchoCount = 0;
+      markWtermPerformance("echo", {
+        seq: decoded.seq,
+        bytes: decoded.bytes.byteLength,
+        count: inputCount,
+      });
+    }
     if (this.listeners.size === 0) {
       this.pendingBeforeSubscribe.push(decoded);
       return;
@@ -320,6 +351,7 @@ function parseTerminalServerMessage(
 }
 
 export function decodeBase64(value: string): Uint8Array {
+  // SAFETY: Uint8Array.fromBase64 is an optional native method with this shape.
   const fromBase64 = (
     Uint8Array as unknown as {
       fromBase64?: (input: string) => Uint8Array;
