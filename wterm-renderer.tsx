@@ -12,6 +12,7 @@ import {
 import { GhosttyCore } from "@wterm/ghostty";
 import { Terminal, type TerminalHandle } from "@wterm/react";
 import type { TerminalAttachment } from "./terminal-attachment.js";
+import { terminalLinkAction, terminalLinkHref } from "./terminal-links.js";
 import { getPluginToken } from "./plugin-token.js";
 import {
   Osc52ClipboardFilter,
@@ -37,7 +38,12 @@ const PLUGIN_ID = "wterm-terminal-preview";
 export const GHOSTTY_WASM_URL = `/api/v1/plugins/${PLUGIN_ID}/http/ghostty-vt.wasm`;
 export const NERD_FONT_URL = `/api/v1/plugins/${PLUGIN_ID}/http/symbols-nerd-font-mono-v3.5.0.woff2`;
 export const NERD_FONT_FAMILY = "Wterm Symbols Nerd Font Mono";
+export const GHOSTTY_SCROLLBACK_LIMIT_BYTES = 1024 * 1024;
+export const GHOSTTY_IMAGE_STORAGE_LIMIT_BYTES = 32 * 1024 * 1024;
+export const GHOSTTY_FOREGROUND_COLOR = "#d4d4d4";
+export const GHOSTTY_BACKGROUND_COLOR = "#1e1e1e";
 const nerdFontLoads = new WeakMap<object, Promise<void>>();
+const disposedCores = new WeakSet<object>();
 const anyEventMouseModes = new WeakMap<
   object,
   { enabled: boolean; generation: number }
@@ -118,7 +124,7 @@ export function encodeAnyEventMouseMove({
 }
 
 /**
- * Ghostty WASM 0.4.0 still discards mode 1003 before `mouseTracking()` can
+ * Ghostty WASM 0.5.0 still discards mode 1003 before `mouseTracking()` can
  * expose it. Track that one DEC mode at the write boundary, then let Wterm DOM
  * provide its supported click, wheel, and button-drag subset through mode 1002.
  */
@@ -129,6 +135,12 @@ export function supportAnyEventMouseMode(core: GhosttyCore): GhosttyCore {
   const initCore = core.init.bind(core);
   const resizeCore = core.resize.bind(core);
   const supportedMode = core.mouseTracking.bind(core);
+  const getCell = core.getCell?.bind(core);
+  const getScrollbackCell = core.getScrollbackCell?.bind(core);
+  const decorateCell = <Cell extends { linkUri?: string }>(cell: Cell): Cell => {
+    const href = terminalLinkHref(cell.linkUri);
+    return href === cell.linkUri ? cell : ({ ...cell, linkUri: href } as Cell);
+  };
   // Herdr's copy-on-select arrives outside the original pointer gesture.
   // Try the synchronous path immediately; it still falls back to the queued
   // async write when the browser refuses a script-initiated copy.
@@ -222,7 +234,32 @@ export function supportAnyEventMouseMode(core: GhosttyCore): GhosttyCore {
     writeString(filtered, afterChunk);
   };
   core.mouseTracking = () => (anyEventMouse ? 1002 : supportedMode());
+  if (getCell) {
+    core.getCell = (row, col) => decorateCell(getCell(row, col));
+  }
+  if (getScrollbackCell) {
+    core.getScrollbackCell = (offset, col) =>
+      decorateCell(getScrollbackCell(offset, col));
+  }
   return core;
+}
+
+export function ghosttyCoreOptions(wasmPath: string) {
+  return {
+    wasmPath,
+    scrollbackLimit: GHOSTTY_SCROLLBACK_LIMIT_BYTES,
+    foregroundColor: GHOSTTY_FOREGROUND_COLOR,
+    backgroundColor: GHOSTTY_BACKGROUND_COLOR,
+    imageStorageLimit: GHOSTTY_IMAGE_STORAGE_LIMIT_BYTES,
+  };
+}
+
+export function disposeGhosttyCore(
+  core: Pick<GhosttyCore, "dispose"> | null,
+): void {
+  if (!core || disposedCores.has(core)) return;
+  disposedCores.add(core);
+  core.dispose();
 }
 
 const pluginToken = getPluginToken;
@@ -245,11 +282,11 @@ export async function loadGhosttyCore(
 ): Promise<GhosttyCore> {
   if (wasmUrl !== GHOSTTY_WASM_URL) {
     return supportAnyEventMouseMode(
-      await GhosttyCore.load({ wasmPath: wasmUrl }),
+      await GhosttyCore.load(ghosttyCoreOptions(wasmUrl)),
     );
   }
   return supportAnyEventMouseMode(
-    await GhosttyCore.load({ wasmPath: await ghosttyWasmObjectUrl() }),
+    await GhosttyCore.load(ghosttyCoreOptions(await ghosttyWasmObjectUrl())),
   );
 }
 
@@ -381,10 +418,12 @@ type TerminalFontStyle = CSSProperties & {
 export function WtermRenderer({
   attachment,
   fontSizePx = 14,
+  onLinkClick,
   wasmUrl = GHOSTTY_WASM_URL,
 }: {
   attachment: TerminalAttachment;
   fontSizePx?: number;
+  onLinkClick?: (href: string) => boolean;
   wasmUrl?: string;
 }) {
   const terminalRef = useRef<TerminalHandle>(null);
@@ -435,6 +474,11 @@ export function WtermRenderer({
       alive = false;
     };
   }, [reloadNonce, wasmUrl]);
+
+  useEffect(() => {
+    if (!core) return;
+    return () => disposeGhosttyCore(core);
+  }, [core]);
 
   readyRef.current = ready;
 
@@ -737,6 +781,24 @@ export function WtermRenderer({
     [],
   );
 
+  const handleLinkClick = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const link = target.closest<HTMLAnchorElement>(".term-link");
+      if (!link || !onLinkClick) return;
+      const action = terminalLinkAction(link.href);
+      if (
+        action?.kind === "url" &&
+        (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+      ) {
+        return;
+      }
+      if (onLinkClick(link.href)) event.preventDefault();
+    },
+    [onLinkClick],
+  );
+
   if (error) {
     const detail = error instanceof Error ? error.message : String(error);
     return (
@@ -785,6 +847,7 @@ export function WtermRenderer({
       }}
       onWheelCapture={handleWheelCapture}
       onCopyCapture={handleCopy}
+      onClick={handleLinkClick}
       style={terminalFontStyle}
       className="wterm-renderer"
       data-renderer="ghostty"
@@ -796,10 +859,12 @@ export function TerminalRenderer({
   terminalId,
   attachment,
   fontSizePx = 14,
+  onLinkClick,
 }: {
   terminalId: string;
   attachment: TerminalAttachment | null;
   fontSizePx?: number;
+  onLinkClick?: (href: string) => boolean;
 }) {
   if (!attachment) {
     return (
@@ -814,6 +879,7 @@ export function TerminalRenderer({
         key={terminalId}
         attachment={attachment}
         fontSizePx={fontSizePx}
+        onLinkClick={onLinkClick}
       />
     </div>
   );

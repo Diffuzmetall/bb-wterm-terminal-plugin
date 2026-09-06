@@ -6,7 +6,9 @@ import {
   shouldApplyTerminalResize,
   shouldClearSelectionOnWheel,
   computeFollowBottom,
+  disposeGhosttyCore,
   encodeAnyEventMouseMove,
+  ghosttyCoreOptions,
   supportAnyEventMouseMode,
 } from "./wterm-renderer";
 
@@ -140,6 +142,48 @@ describe("first paint and TUI scrollback", () => {
     );
     expect(source).toContain('aria-label="Terminal loading"');
     expect(source).toContain('aria-busy="true"');
+  });
+});
+
+describe("terminal hyperlink activation", () => {
+  it("delegates rendered anchors to the BB link opener", () => {
+    const source = readFileSync(
+      new URL("./wterm-renderer.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain('onClick={handleLinkClick}');
+    expect(source).toContain("terminalLinkAction(link.href)");
+    expect(source).toContain("onLinkClick(link.href)");
+  });
+});
+
+describe("Ghostty graphics configuration and lifecycle", () => {
+  it("keeps Kitty storage bounded and uses the terminal dark palette", () => {
+    expect(ghosttyCoreOptions("/ghostty-vt.wasm")).toEqual({
+      wasmPath: "/ghostty-vt.wasm",
+      scrollbackLimit: 1024 * 1024,
+      foregroundColor: "#d4d4d4",
+      backgroundColor: "#1e1e1e",
+      imageStorageLimit: 32 * 1024 * 1024,
+    });
+  });
+
+  it("disposes one core at most once across repeated React cleanups", () => {
+    const core = { dispose: vi.fn() };
+    disposeGhosttyCore(core);
+    disposeGhosttyCore(core);
+    expect(core.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("keeps image sizing delegated to the upstream terminal surface", () => {
+    const source = readFileSync(
+      new URL("./wterm-renderer.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain("autoResize");
+    expect(source).toContain("imageStorageLimit: GHOSTTY_IMAGE_STORAGE_LIMIT_BYTES");
+    expect(source).not.toContain("maxImageWidth={window");
+    expect(source).not.toContain("maxImageHeight={window");
   });
 });
 

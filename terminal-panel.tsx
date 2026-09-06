@@ -9,12 +9,15 @@ import {
   type ReactNode,
 } from "react";
 import type { PluginThreadPanelProps } from "@bb/plugin-sdk/app";
+import { useBbNavigate } from "@bb/plugin-sdk/app";
 import {
   useLegacyTerminalAttachment,
   type TerminalAttachment,
 } from "./terminal-attachment.js";
 import { preloadTerminalAssets, TerminalRenderer } from "./wterm-renderer.js";
 import { PLUGIN_ID, getPluginToken } from "./plugin-token.js";
+import { terminalLinkAction } from "./terminal-links.js";
+import type { PickerSession } from "./picker-state.js";
 
 export const preloadTerminalPanel = preloadTerminalAssets;
 
@@ -79,7 +82,7 @@ export async function uploadTerminalFile({
   file: File;
   signal: AbortSignal;
   terminalId: string;
-  threadId: string;
+  threadId?: string;
 }): Promise<TerminalUploadResult> {
   const extension = /\.([A-Za-z0-9]{1,10})$/u
     .exec(file.name)?.[1]
@@ -94,11 +97,11 @@ export async function uploadTerminalFile({
   }
   const token = await getPluginToken();
   const query = new URLSearchParams({
-    threadId,
     terminalId,
     fileName: file.name || "upload",
     mime: file.type || "application/octet-stream",
   });
+  if (threadId) query.set("threadId", threadId);
   const response = await fetch(
     `/api/v1/plugins/${PLUGIN_ID}/http/upload?${query.toString()}`,
     {
@@ -160,19 +163,29 @@ export function parseTerminalParams(
 function AttachedTerminal({
   threadId,
   terminalId,
+  session,
 }: {
   threadId: string;
   terminalId: string;
+  session: PickerSession | null;
 }) {
-  return <LegacyAttachedTerminal threadId={threadId} terminalId={terminalId} />;
+  return (
+    <LegacyAttachedTerminal
+      threadId={threadId}
+      terminalId={terminalId}
+      session={session}
+    />
+  );
 }
 
 function LegacyAttachedTerminal({
   threadId,
   terminalId,
+  session,
 }: {
   threadId: string;
   terminalId: string;
+  session: PickerSession | null;
 }) {
   const attachment = useLegacyTerminalAttachment(terminalId);
   return (
@@ -180,19 +193,46 @@ function LegacyAttachedTerminal({
       threadId={threadId}
       terminalId={terminalId}
       attachment={attachment}
+      session={session}
     />
   );
 }
 
-function TerminalWithUpload({
+export function TerminalWithUpload({
   attachment,
   terminalId,
   threadId,
+  session,
 }: {
   attachment: TerminalAttachment | null;
   terminalId: string;
-  threadId: string;
+  threadId?: string;
+  session: PickerSession | null;
 }) {
+  const navigate = useBbNavigate();
+  const openTerminalLink = useCallback(
+    (href: string): boolean => {
+      const action = terminalLinkAction(href);
+      if (!action) return false;
+      if (action.kind === "url") {
+        if (navigate.openUrl(action.url)) return true;
+        return window.open(action.url, "_blank", "noopener,noreferrer") !== null;
+      }
+      if (!session?.hostId) {
+        toast.error("This terminal has no file host to open the link on.");
+        return true;
+      }
+      const opened = navigate.experimental_openFilePreview({
+        target: { kind: "host", hostId: session.hostId, path: action.path },
+        location: null,
+      });
+      if (!opened) {
+        toast.error("BB could not open this terminal file.");
+      }
+      return true;
+    },
+    [navigate, session?.hostId],
+  );
   const [transfer, setTransfer] = useState<TransferState>({ kind: "idle" });
   const [fontSize, setFontSize] = useState(readTerminalFontSize);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -366,6 +406,7 @@ function TerminalWithUpload({
           terminalId={terminalId}
           attachment={attachment}
           fontSizePx={fontSize}
+          onLinkClick={openTerminalLink}
         />
       </div>
     </div>
@@ -375,13 +416,19 @@ function TerminalWithUpload({
 export default function TerminalPanel({
   threadId,
   params,
+  session,
 }: {
   threadId: PluginThreadPanelProps["threadId"];
   params: unknown;
+  session: PickerSession | null;
 }): ReactNode {
   const selected = parseTerminalParams(params);
   return selected ? (
-    <AttachedTerminal threadId={threadId} terminalId={selected.terminalId} />
+    <AttachedTerminal
+      threadId={threadId}
+      terminalId={selected.terminalId}
+      session={session}
+    />
   ) : (
     <div className="p-4 text-sm">Select a terminal to continue.</div>
   );

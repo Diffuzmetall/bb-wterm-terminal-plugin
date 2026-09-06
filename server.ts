@@ -14,6 +14,9 @@ import {
 
 export const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MAX_FILE_UPLOAD_BYTES = 25 * 1024 * 1024;
+export const HERDR_TITLE = "Herdr";
+export const HERDR_COMMAND = "herdr";
+export const WTERM_NAV_TITLE = "Wterm";
 const UPLOAD_PATH = "/upload";
 const WASM_PATH = "/ghostty-vt.wasm";
 const NERD_FONT_PATH = "/symbols-nerd-font-mono-v3.5.0.woff2";
@@ -39,6 +42,7 @@ const session = z.object({
 	id: z.string(),
 	title: z.string(),
 	initialCwd: z.string().nullable(),
+	hostId: z.string().nullable(),
 	status: z.string(),
 	updatedAt: z.number(),
 	lastUserInputAt: z.number().nullable(),
@@ -57,6 +61,22 @@ export const wtermRpcContract = defineRpcContract({
 			threadId: z.string().min(1),
 			terminalId: z.string().min(1),
 		}),
+		output: session,
+	},
+	openHerdr: {
+		input: z.object({}),
+		output: session,
+	},
+	closeHerdr: {
+		input: z.object({ terminalId: z.string().min(1) }),
+		output: session,
+	},
+	openWterm: {
+		input: z.object({}),
+		output: session,
+	},
+	closeWterm: {
+		input: z.object({ terminalId: z.string().min(1) }),
 		output: session,
 	},
 });
@@ -247,6 +267,7 @@ function unavailableLinkedSession(terminalId: string): Session {
 		id: terminalId,
 		title: "Wterm terminal",
 		initialCwd: null,
+		hostId: null,
 		status: "unavailable",
 		updatedAt: 0,
 		lastUserInputAt: null,
@@ -322,20 +343,42 @@ async function listedSessionsForThread(bb: BbPluginApi, threadId: string) {
 	];
 }
 
+async function resolveUploadTerminal(
+	bb: BbPluginApi,
+	terminalId: string,
+	threadId: string,
+): Promise<Session> {
+	if (threadId) {
+		const terminal = (await sessionsForThread(bb, threadId)).find(
+			(item) => item.id === terminalId,
+		);
+		if (!terminal) {
+			throw new UploadError(404, "terminal is not in the requested thread");
+		}
+		return terminal;
+	}
+	try {
+		const session = await bb.sdk.terminals.get({ terminalId });
+		if (!session?.id || !liveNavTerminalSession([session])) {
+			throw new UploadError(404, "terminal is not an active sidebar session");
+		}
+		return mapSession(session);
+	} catch (error) {
+		if (error instanceof UploadError) throw error;
+		throw new UploadError(404, "terminal is not an active sidebar session");
+	}
+}
+
 async function handleUpload(
 	bb: BbPluginApi,
 	context: PluginHttpContext,
 ): Promise<Response> {
 	try {
-		const threadId = requiredQuery(context, "threadId");
+		const threadId = context.req.query("threadId")?.trim() ?? "";
 		const terminalId = requiredQuery(context, "terminalId");
 		const fileName = requiredQuery(context, "fileName");
 		const mime = context.req.query("mime")?.trim() || "application/octet-stream";
-		const sessions = await sessionsForThread(bb, threadId);
-		const terminal = sessions.find((item) => item.id === terminalId);
-		if (!terminal) {
-			throw new UploadError(404, "terminal is not in the requested thread");
-		}
+		const terminal = await resolveUploadTerminal(bb, terminalId, threadId);
 
 		const bytes = await readBoundedUploadBody(context.req.raw, fileName, mime);
 		if (context.req.raw.signal.aborted) {
@@ -378,10 +421,31 @@ async function handleUpload(
 	}
 }
 
+export function pickConnectedHostId(
+	hosts: readonly { id: string; status: string }[],
+): string {
+	const host = hosts.find((item) => item.status === "connected");
+	if (!host) throw new Error("No connected BB machine to run terminal");
+	return host.id;
+}
+
+export function liveNavTerminalSession<
+	T extends { title: string; status: string },
+>(sessions: readonly T[]): T | null {
+	return (
+		sessions.find(
+			(item) =>
+				(item.title === HERDR_TITLE || item.title === WTERM_NAV_TITLE) &&
+				(item.status === "running" || item.status === "starting"),
+		) ?? null
+	);
+}
+
 function mapSession(value: {
 	id: string;
 	title: string;
 	initialCwd: string;
+	hostId?: string;
 	status: string;
 	updatedAt: number;
 	lastUserInputAt?: number | null;
@@ -390,6 +454,7 @@ function mapSession(value: {
 		id: value.id,
 		title: value.title,
 		initialCwd: value.initialCwd,
+		hostId: value.hostId ?? null,
 		status: value.status,
 		updatedAt: value.updatedAt,
 		lastUserInputAt: value.lastUserInputAt ?? null,
@@ -412,6 +477,20 @@ async function ghosttyWasmBytes(): Promise<Uint8Array> {
 }
 
 export default function plugin(bb: BbPluginApi) {
+	bb.settings?.define({
+		showHerdrInSidebar: {
+			type: "boolean",
+			label: "Show Herdr in the left sidebar",
+			description: "Open Herdr in a full-page Wterm terminal.",
+			default: false,
+		},
+		showWtermInSidebar: {
+			type: "boolean",
+			label: "Show Wterm in the left sidebar",
+			description: "Open a standalone shell in a full-page Wterm terminal.",
+			default: false,
+		},
+	});
 	bb.rpc.register(wtermRpcContract, {
 		async listSessions({ threadId }) {
 			return listedSessionsForThread(bb, threadId);
@@ -433,6 +512,54 @@ export default function plugin(bb: BbPluginApi) {
 			});
 			await rememberLinkedTerminal(bb, threadId, result.id);
 			return mapSession(result);
+		},
+		async openHerdr() {
+			const hostId = pickConnectedHostId(await bb.sdk.hosts.list());
+			return mapSession(
+				await bb.sdk.terminals.create({
+					scope: { kind: "host_path", hostId, cwd: null },
+					cols: 80,
+					rows: 24,
+					start: { mode: "command", command: HERDR_COMMAND },
+					title: HERDR_TITLE,
+				}),
+			);
+		},
+		async closeHerdr({ terminalId }) {
+			const terminal = await bb.sdk.terminals.get({ terminalId });
+			if (
+				terminal.title !== HERDR_TITLE ||
+				!liveNavTerminalSession([terminal])
+			) {
+				throw new Error("Terminal is not an active Herdr session");
+			}
+			return mapSession(
+				await bb.sdk.terminals.close({ terminalId, mode: "force" }),
+			);
+		},
+		async openWterm() {
+			const hostId = pickConnectedHostId(await bb.sdk.hosts.list());
+			return mapSession(
+				await bb.sdk.terminals.create({
+					scope: { kind: "host_path", hostId, cwd: null },
+					cols: 80,
+					rows: 24,
+					start: { mode: "shell" },
+					title: WTERM_NAV_TITLE,
+				}),
+			);
+		},
+		async closeWterm({ terminalId }) {
+			const terminal = await bb.sdk.terminals.get({ terminalId });
+			if (
+				terminal.title !== WTERM_NAV_TITLE ||
+				!liveNavTerminalSession([terminal])
+			) {
+				throw new Error("Terminal is not an active Wterm session");
+			}
+			return mapSession(
+				await bb.sdk.terminals.close({ terminalId, mode: "force" }),
+			);
 		},
 		async restartTerminal({ threadId, terminalId }) {
 			const sessions = await sessionsForThread(bb, threadId);

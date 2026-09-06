@@ -9,6 +9,7 @@ const running = {
   id: "term-running",
   title: "Shell",
   initialCwd: "/tmp",
+  hostId: null,
   status: "running",
   updatedAt: 1,
   lastUserInputAt: null,
