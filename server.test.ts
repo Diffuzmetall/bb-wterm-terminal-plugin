@@ -31,12 +31,9 @@ function uploadContext({
   threadId?: string;
 } = {}) {
   const url = new URL("http://bb/upload");
-  url.search = new URLSearchParams({
-    fileName,
-    mime,
-    terminalId,
-    threadId,
-  }).toString();
+  const query = new URLSearchParams({ fileName, mime, terminalId });
+  if (threadId) query.set("threadId", threadId);
+  url.search = query.toString();
   const body = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(body).set(bytes);
   const raw = new Request(url, {
@@ -73,6 +70,11 @@ function createPluginHarness() {
     updatedAt: 2,
     lastUserInputAt: null,
   };
+  const get = vi.fn(({ terminalId }: { terminalId: string }) =>
+    terminalId === terminal.id
+      ? Promise.resolve(terminal)
+      : Promise.reject(new Error("terminal not found")),
+  );
   const list = vi.fn((input: { scope: { threadId: string } }) =>
     Promise.resolve({
       sessions: input.scope.threadId === terminal.threadId ? [terminal] : [],
@@ -88,7 +90,7 @@ function createPluginHarness() {
         set: vi.fn().mockResolvedValue(undefined),
       },
     },
-    sdk: { files: { write }, terminals: { get: vi.fn(), list } },
+    sdk: { files: { write }, terminals: { get, list } },
   } as never;
   plugin(bb);
   const handlers = new Map(
@@ -101,6 +103,7 @@ function createPluginHarness() {
     font: handlers.get(
       "GET /symbols-nerd-font-mono-v3.5.0.woff2",
     ) as () => Promise<Response>,
+    get,
     list,
     register,
     route,
@@ -136,16 +139,36 @@ describe("createBytesCache", () => {
 });
 
 describe("Wterm server boundaries", () => {
-  it("registers authenticated upload and renderer asset routes", () => {
+  it("registers settings, RPC methods, upload, and renderer asset routes", () => {
+    const define = vi.fn();
     const register = vi.fn();
     const route = vi.fn();
-    plugin({ http: { route }, rpc: { register }, sdk: {} } as never);
+    plugin({
+      http: { route },
+      rpc: { register },
+      sdk: {},
+      settings: { define },
+    } as never);
 
+    expect(define).toHaveBeenCalledWith({
+      showHerdrInSidebar: expect.objectContaining({
+        type: "boolean",
+        default: false,
+      }),
+      showWtermInSidebar: expect.objectContaining({
+        type: "boolean",
+        default: false,
+      }),
+    });
     expect(register).toHaveBeenCalledWith(wtermRpcContract, expect.any(Object));
     expect(Object.keys(wtermRpcContract)).toEqual([
       "listSessions",
       "createTerminal",
       "restartTerminal",
+      "openHerdr",
+      "closeHerdr",
+      "openWterm",
+      "closeWterm",
     ]);
     expect(route).toHaveBeenCalledWith(
       "POST",
@@ -208,6 +231,100 @@ describe("Wterm server boundaries", () => {
 
     expect(createHash("sha256").update(vendored).digest("hex")).toBe(expected);
     expect(createHash("sha256").update(upstream).digest("hex")).toBe(expected);
+  });
+
+  it("creates and closes dedicated Herdr and Wterm sidebar PTYs", async () => {
+    const register = vi.fn();
+    const first = {
+      id: "term-herdr-1",
+      title: "Herdr",
+      initialCwd: "/home/ubuntu",
+      hostId: "host-1",
+      status: "running",
+      updatedAt: 20,
+      lastUserInputAt: null,
+    };
+    const second = { ...first, id: "term-herdr-2", updatedAt: 21 };
+    const wterm = {
+      ...first,
+      id: "term-wterm",
+      title: "Wterm",
+      updatedAt: 22,
+    };
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second)
+      .mockResolvedValueOnce(wterm);
+    const get = vi.fn().mockResolvedValue(first);
+    const close = vi.fn().mockResolvedValue({ ...first, status: "exited" });
+    const bb = {
+      http: { route: vi.fn() },
+      rpc: { register },
+      storage: { kv: { get: vi.fn(), set: vi.fn() } },
+      sdk: {
+        hosts: {
+          list: vi.fn().mockResolvedValue([
+            { id: "host-offline", status: "disconnected" },
+            { id: "host-1", status: "connected" },
+          ]),
+        },
+        terminals: { close, create, get },
+      },
+    } as never;
+    plugin(bb);
+    const handlers = register.mock.calls[0]?.[1];
+
+    await expect(handlers.openHerdr({})).resolves.toMatchObject({
+      id: "term-herdr-1",
+      title: "Herdr",
+    });
+    await expect(handlers.openHerdr({})).resolves.toMatchObject({
+      id: "term-herdr-2",
+      title: "Herdr",
+    });
+    await expect(handlers.openWterm({})).resolves.toMatchObject({
+      id: "term-wterm",
+      title: "Wterm",
+    });
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(create).toHaveBeenNthCalledWith(1, {
+      scope: { kind: "host_path", hostId: "host-1", cwd: null },
+      cols: 80,
+      rows: 24,
+      start: { mode: "command", command: "herdr" },
+      title: "Herdr",
+    });
+    expect(create).toHaveBeenNthCalledWith(3, {
+      scope: { kind: "host_path", hostId: "host-1", cwd: null },
+      cols: 80,
+      rows: 24,
+      start: { mode: "shell" },
+      title: "Wterm",
+    });
+
+    await expect(
+      handlers.closeHerdr({ terminalId: "term-herdr-1" }),
+    ).resolves.toMatchObject({ id: "term-herdr-1", status: "exited" });
+    expect(get).toHaveBeenCalledWith({ terminalId: "term-herdr-1" });
+    expect(close).toHaveBeenCalledWith({
+      terminalId: "term-herdr-1",
+      mode: "force",
+    });
+
+    get.mockResolvedValue(wterm);
+    close.mockResolvedValue({ ...wterm, status: "exited" });
+    await expect(
+      handlers.closeWterm({ terminalId: "term-wterm" }),
+    ).resolves.toMatchObject({ id: "term-wterm", status: "exited" });
+
+    get.mockResolvedValue({ ...first, title: "Shell" });
+    await expect(
+      handlers.closeHerdr({ terminalId: "term-herdr-1" }),
+    ).rejects.toThrow("not an active Herdr");
+    await expect(
+      handlers.closeWterm({ terminalId: "term-wterm" }),
+    ).rejects.toThrow("not an active Wterm");
   });
 
   it("creates hidden environment terminals and rejects cross-thread restart", async () => {
@@ -566,6 +683,49 @@ describe("Wterm server boundaries", () => {
       expectedSha256: null,
       mode: 0o600,
     });
+  });
+
+  it("writes uploads for an active host-scoped Herdr session", async () => {
+    const harness = createPluginHarness();
+    const bytes = new Uint8Array([7, 8, 9]);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    harness.get.mockResolvedValue({
+      id: "term-herdr",
+      title: "Herdr",
+      initialCwd: "/home/ubuntu",
+      hostId: "remote-host",
+      status: "running",
+      updatedAt: 2,
+      lastUserInputAt: null,
+    });
+    harness.write.mockResolvedValue({
+      outcome: "written",
+      sha256,
+      sizeBytes: bytes.byteLength,
+    });
+
+    const response = await harness.upload(
+      uploadContext({ bytes, terminalId: "term-herdr", threadId: "" }),
+    );
+
+    expect(response.status).toBe(201);
+    expect(harness.get).toHaveBeenCalledWith({ terminalId: "term-herdr" });
+    expect(harness.list).not.toHaveBeenCalled();
+    expect(harness.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hostId: "remote-host",
+        rootPath: "/home/ubuntu",
+      }),
+    );
+  });
+
+  it("rejects threadless uploads to terminals other than active sidebar sessions", async () => {
+    const harness = createPluginHarness();
+
+    const response = await harness.upload(uploadContext({ threadId: "" }));
+
+    expect(response.status).toBe(404);
+    expect(harness.write).not.toHaveBeenCalled();
   });
 
   it("rejects cross-thread, oversized, and aborted uploads before host write", async () => {

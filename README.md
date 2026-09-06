@@ -19,6 +19,7 @@ normal shells and TUI sessions.
 - Ghostty terminal emulation through `@wterm/ghostty` 0.5.0 and WebAssembly.
 - Dark first paint while WASM and the Nerd Font load; leftover TUI colors are not kept on scrollback rows.
 - Composer shortcut: a terminal button in the chat footer. If a Wterm tab is already open in this thread, it reveals that panel. If none is open, it creates a **new** session. On BB hosts that support `experimental_primarySurface`, chat collapses so the terminal fills the thread; use **Exit Full Screen** to return. Packaged BB 0.40.0 does not include that host API, so the same button opens the side panel or session picker instead.
+- Optional full-page shortcuts in BB's left sidebar. **Herdr** launches `herdr` with its ram icon; **Wterm** launches a standalone shell. Each shortcut creates and owns an independent PTY.
 - Bundled Symbols Nerd Font Mono fallback for Powerline, Starship, and Nerd
   Font prompt icons; no local font installation is required.
 - Every **Wterm terminal** tab starts an independent thread-scoped terminal.
@@ -59,6 +60,17 @@ bb plugin source wterm-terminal-preview
 Open a BB thread and choose **Wterm terminal** from the new-tab menu. Each
 activation, including **+** for another tab, creates a new terminal session.
 The picker in an existing tab can still attach to a running session.
+
+To add full-page launchers to BB's left sidebar, open this plugin's settings
+page and enable either or both options under **Configuration**:
+
+- **Show Herdr in the left sidebar** — starts `herdr` in a full-page Wterm terminal.
+- **Show Wterm in the left sidebar** — starts a standalone shell in a full-page Wterm terminal.
+
+Both options are off by default, so installing the plugin does not add sidebar
+items unless you ask it to. Closing or leaving either page closes only the PTY
+created by that page; existing Herdr workspaces and agents keep running inside
+the Herdr runtime.
 
 The chat composer also has a terminal button. If a Wterm tab is already open,
 it reveals that panel; otherwise it creates a new session. On BB hosts that
@@ -136,6 +148,9 @@ bb plugin enable wterm-terminal-preview
 bb plugin remove wterm-terminal-preview
 ```
 
+The two sidebar toggles live on the plugin's settings page under
+**Configuration**. Changes apply to the desktop sidebar immediately.
+
 If the BB host daemon restarts and the selected terminal is no longer
 available, reopen the Wterm panel and select or restart a terminal session.
 
@@ -186,6 +201,10 @@ repository's MIT copyright notice.
 The bundled Ghostty WASM renderer comes from
 [`@wterm/ghostty`](https://github.com/vercel-labs/wterm/tree/main/packages/%40wterm/ghostty),
 which is distributed under the Apache-2.0 license.
+
+The Herdr sidebar mark follows the official
+[`ram.svg`](https://herdr.dev/assets/ram.svg) from the Apache-2.0-licensed
+[Herdr project](https://github.com/herdrdev/herdr).
 
 `SymbolsNerdFontMono-Regular.woff2` comes from Nerd Fonts v3.5.0 and is
 distributed under the included [MIT license](LICENSE-NERD-FONTS-SYMBOLS).

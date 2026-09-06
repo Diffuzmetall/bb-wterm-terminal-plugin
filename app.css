@@ -1,3 +1,16 @@
+.wterm-herdr-page {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.wterm-herdr-page > .wterm-terminal-with-upload {
+  flex: 1;
+  min-height: 0;
+}
+
 .wterm-session-terminal-action {
   align-items: center;
   background: transparent;

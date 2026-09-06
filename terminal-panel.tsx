@@ -82,7 +82,7 @@ export async function uploadTerminalFile({
   file: File;
   signal: AbortSignal;
   terminalId: string;
-  threadId: string;
+  threadId?: string;
 }): Promise<TerminalUploadResult> {
   const extension = /\.([A-Za-z0-9]{1,10})$/u
     .exec(file.name)?.[1]
@@ -97,11 +97,11 @@ export async function uploadTerminalFile({
   }
   const token = await getPluginToken();
   const query = new URLSearchParams({
-    threadId,
     terminalId,
     fileName: file.name || "upload",
     mime: file.type || "application/octet-stream",
   });
+  if (threadId) query.set("threadId", threadId);
   const response = await fetch(
     `/api/v1/plugins/${PLUGIN_ID}/http/upload?${query.toString()}`,
     {
@@ -198,7 +198,7 @@ function LegacyAttachedTerminal({
   );
 }
 
-function TerminalWithUpload({
+export function TerminalWithUpload({
   attachment,
   terminalId,
   threadId,
@@ -206,7 +206,7 @@ function TerminalWithUpload({
 }: {
   attachment: TerminalAttachment | null;
   terminalId: string;
-  threadId: string;
+  threadId?: string;
   session: PickerSession | null;
 }) {
   const navigate = useBbNavigate();

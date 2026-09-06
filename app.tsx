@@ -1,12 +1,21 @@
-import { lazy, useEffect, useRef, useState } from "react";
+import {
+	lazy,
+	Suspense,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from "react";
 import {
 	definePluginApp,
 	useBbContext,
 	useBbNavigate,
 	useRpc,
+	useSettings,
 } from "@bb/plugin-sdk/app";
 import * as BbApp from "@bb/plugin-sdk/app";
 import type { wtermRpcContract } from "./server";
+import { HERDR_RAM_MASK_URL } from "./herdr-icon.js";
 import { evaluateTerminalPresence } from "./terminal-open-policy.js";
 import {
 	beginWtermOpen,
@@ -36,6 +45,82 @@ const PANEL_TITLE = "Wterm terminal";
 
 const loadTerminalPanel = () => import("./terminal-panel.js");
 const TerminalPanel = lazy(loadTerminalPanel);
+const HerdrPanel = lazy(() => import("./herdr-panel.js"));
+const WtermPanel = lazy(() =>
+	import("./herdr-panel.js").then((module) => ({ default: module.WtermPanel })),
+);
+
+function HerdrPage() {
+	return (
+		<Suspense fallback={<div className="wterm-herdr-page wterm-renderer--loading" />}>
+			<HerdrPanel />
+		</Suspense>
+	);
+}
+
+function WtermPage() {
+	return (
+		<Suspense fallback={<div className="wterm-herdr-page wterm-renderer--loading" />}>
+			<WtermPanel />
+		</Suspense>
+	);
+}
+
+type SidebarSettingKey = "showHerdrInSidebar" | "showWtermInSidebar";
+
+function SidebarEntryAccessory({
+	herdrIcon = false,
+	settingKey,
+}: {
+	herdrIcon?: boolean;
+	settingKey: SidebarSettingKey;
+}) {
+	const { isLoading, values } = useSettings();
+	const markerRef = useRef<HTMLSpanElement>(null);
+	const enabled = values?.[settingKey] === true;
+
+	useLayoutEffect(() => {
+		if (isLoading) return;
+		const row = markerRef.current?.closest<HTMLElement>(
+			".bb-sidebar-hover-actions-row",
+		);
+		if (!row) return;
+		row.hidden = !enabled;
+		const icon = herdrIcon
+			? row.querySelector<SVGElement>("button svg")
+			: null;
+		const previousIconStyle = icon?.getAttribute("style") ?? null;
+		if (icon) {
+			icon.style.backgroundColor = "currentColor";
+			icon.style.maskImage = HERDR_RAM_MASK_URL;
+			icon.style.maskPosition = "center";
+			icon.style.maskRepeat = "no-repeat";
+			icon.style.maskSize = "contain";
+			icon.style.setProperty("-webkit-mask-image", HERDR_RAM_MASK_URL);
+			icon.style.setProperty("-webkit-mask-position", "center");
+			icon.style.setProperty("-webkit-mask-repeat", "no-repeat");
+			icon.style.setProperty("-webkit-mask-size", "contain");
+		}
+		return () => {
+			row.hidden = false;
+			if (!icon) return;
+			if (previousIconStyle === null) icon.removeAttribute("style");
+			else icon.setAttribute("style", previousIconStyle);
+		};
+	}, [enabled, herdrIcon, isLoading]);
+
+	return <span ref={markerRef} className="hidden" aria-hidden="true" />;
+}
+
+function HerdrSidebarAccessory() {
+	return (
+		<SidebarEntryAccessory settingKey="showHerdrInSidebar" herdrIcon />
+	);
+}
+
+function WtermSidebarAccessory() {
+	return <SidebarEntryAccessory settingKey="showWtermInSidebar" />;
+}
 
 function useTrackOpenWtermTab(threadId: string, params: unknown): void {
 	const terminalId = hasTerminalParams(params) ? params.terminalId : null;
@@ -469,6 +554,22 @@ export default definePluginApp((app) => {
 		id: "session-terminal",
 		scopes: ["thread"],
 		actions: [{ id: "open-session-terminal", component: OpenSessionTerminalAction }],
+	});
+	app.slots.navPanel({
+		id: "herdr",
+		title: "Herdr",
+		icon: "Terminal",
+		path: "herdr",
+		component: HerdrPage,
+		experimental_sidebarAccessory: HerdrSidebarAccessory,
+	});
+	app.slots.navPanel({
+		id: "wterm",
+		title: "Wterm",
+		icon: "Terminal",
+		path: "wterm",
+		component: WtermPage,
+		experimental_sidebarAccessory: WtermSidebarAccessory,
 	});
 	app.slots.threadPanelAction({
 		id: PANEL_ACTION_ID,
