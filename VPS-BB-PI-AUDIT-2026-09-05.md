@@ -15,6 +15,61 @@
 - Build и production `bb plugin build` прошли.
 - BWT-13 переведён в `in_review`.
 
+## Live revalidation гиперссылок на VPS (2026-09-06)
+
+Первичный отчёт `WTERM-LINKS-QA-2026-09-06.md` пометил проверку как BLOCKED,
+потому что automation получил белый скриншот и не увидел OSC8-метки. Повторная
+проверка с fresh selectors и корректной передачей ESC-последовательности через
+PTY этот результат не воспроизвела.
+
+Подтверждено:
+
+- `wterm-terminal-preview@0.3.18` переустановлен и перезагружен из
+  `/home/ubuntu/Projects/bb-wterm-terminal-plugin`; статус `running`,
+  `handlerStats.errorCount=0`.
+- Wterm surface отображается; реальный PTY создал ровно один DOM-элемент
+  `.term-link` с меткой `WTERM_WEB_QA`.
+- Клик по `https://example.com` открыл отдельную вкладку Chromium с URL
+  `https://example.com/`.
+- Клик по `file://.../README.md` открыл вкладку BB Files `README.md` с
+  `Preview`, `Raw`, `Copy file path` и содержимым Markdown.
+- Browser page errors и console output пусты. Запросы terminal creation, token,
+  Ghostty WASM, font и file content завершились HTTP 200.
+- Скриншоты приложены к задаче BWT-13: `wterm-osc8-web-rendered.png` и
+  `wterm-file-route-production.png`.
+
+Диагностический вывод: BLOCKED был вызван stale accessibility refs (фокус ушёл
+в composer вместо terminal) и потерей backslash/ESC в первой automation-команде,
+а не дефектом Wterm surface или маршрутизации ссылок.
+
+### Ручная проверка Kitty Graphics
+
+Проверять в свежем thread, открытом через VPS URL:
+
+1. Открыть `More plugin actions` → `Show session terminal`.
+2. Ввести в Wterm:
+
+   ```bash
+   printf '\033]8;;https://example.com\033\\WEB_TEST\033]8;;\033\\\n'
+   ```
+
+   Метка `WEB_TEST` должна стать кликабельной и открыть сайт в BB browser.
+3. Для file route выполнить:
+
+   ```bash
+   printf '\033]8;;file:///absolute/path/to/README.md\033\\FILE_TEST\033]8;;\033\\\n'
+   ```
+
+   Метка `FILE_TEST` должна открыть этот файл в BB Files/file viewer.
+4. Для Kitty-картинки использовать Kitty-compatible client, который отправляет
+   direct PNG/RGB/RGBA graphics escape sequence. Проверить, что картинка видна,
+   сохраняет пропорции, не перекрывает prompt, остаётся на месте после resize и
+   scrollback, а после выхода из `vim`/`less` не оставляет stale canvas.
+
+Важно: upload-функция Wterm только загружает файл и вставляет путь в shell; она
+не является автоматическим Kitty image preview. Для проверки картинки нужен
+клиент, который действительно отправляет Kitty Graphics escape sequence.
+
 ## Почему возвращается MacBook URL
 
 ### Подтверждённые факты
