@@ -95,22 +95,29 @@ describe("selectedTerminalText", () => {
     end = "inside",
     start = "inside",
     scopedText = "selected text",
-    text = scopedText,
+    text,
+  }: {
+    end?: string;
+    start?: string;
+    scopedText?: string;
+    text?: string;
   } = {}) {
+    const selectedText = scopedText ?? "selected text";
+    const terminalText = text ?? selectedText;
     return {
       selection: {
         getRangeAt: () => ({
           cloneRange: () => ({
             setEnd: () => undefined,
             setStart: () => undefined,
-            toString: () => scopedText,
+            toString: () => selectedText,
           }),
           endContainer: end,
           startContainer: start,
         }),
         isCollapsed: false,
         rangeCount: 1,
-        toString: () => text,
+        toString: () => terminalText,
       },
       terminal: {
         childNodes: { length: 1 },

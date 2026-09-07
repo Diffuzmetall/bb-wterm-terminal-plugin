@@ -180,6 +180,29 @@ npm test
 npm run build
 ```
 
+Before changing dependencies or the checked-in WASM, run the same fail-fast check
+used by `npm run build`:
+
+```sh
+npm run wterm:preflight
+```
+
+It compares installed `@wterm/{core,dom,ghostty,react}` package metadata with
+`package.json` and the root `package-lock.json`, then compares the repository
+`ghostty-vt.wasm` SHA-256 with the installed `@wterm/ghostty` copy. A mismatch
+stops before `bb plugin build`, so existing `dist/` artifacts remain untouched.
+The build writes `dist/wterm-build-provenance.json` with the verified versions
+and WASM SHA-256. For safe dependency recovery, reinstall from the committed
+lockfile and rerun the check:
+
+```sh
+npm ci
+npm run wterm:preflight
+```
+
+Do not bypass the check with a custom WASM; update the pinned dependency and
+repository asset together.
+
 The standalone tests protect thread scoping, upload limits and integrity, safe
 host paths, terminal replay ordering, queued input and resize, and detach
 behavior. They run against this repository's sources without importing the BB

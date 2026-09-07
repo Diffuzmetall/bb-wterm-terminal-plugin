@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "baseUrl": ".",
+    "paths": {
+      "@bb/plugin-sdk": ["node_modules/@get-bb/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts"],
+      "@bb/plugin-sdk/app": ["node_modules/@get-bb/plugin-sdk/bundled-types/bb-plugin-sdk-app.d.ts"],
+      "@bb/plugin-sdk/*": ["node_modules/@get-bb/plugin-sdk/bundled-types/bb-plugin-sdk-*.d.ts"]
+    },
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "types": ["node", "vitest/globals"],
+    "allowImportingTsExtensions": true
+  },
+  "include": ["*.ts", "*.tsx"],
+  "exclude": ["dist", "node_modules", ".bb-wterm-uploads"]
+}

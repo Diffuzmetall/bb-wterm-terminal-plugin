@@ -1,21 +1,12 @@
-import {
-	lazy,
-	Suspense,
-	useEffect,
-	useLayoutEffect,
-	useRef,
-	useState,
-} from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {
 	definePluginApp,
 	useBbContext,
 	useBbNavigate,
 	useRpc,
-	useSettings,
 } from "@bb/plugin-sdk/app";
 import * as BbApp from "@bb/plugin-sdk/app";
 import type { wtermRpcContract } from "./server";
-import { HERDR_RAM_MASK_URL } from "./herdr-icon.js";
 import { evaluateTerminalPresence } from "./terminal-open-policy.js";
 import {
 	beginWtermOpen,
@@ -52,79 +43,43 @@ const WtermPanel = lazy(() =>
 
 function HerdrPage() {
 	return (
-		<Suspense fallback={<div className="wterm-herdr-page wterm-renderer--loading" />}>
-			<HerdrPanel />
+		<Suspense
+			fallback={<div className="wterm-herdr-page wterm-renderer--loading" />}
+		>
+			<HerdrPanel subPath="" />
 		</Suspense>
 	);
 }
 
 function WtermPage() {
 	return (
-		<Suspense fallback={<div className="wterm-herdr-page wterm-renderer--loading" />}>
-			<WtermPanel />
+		<Suspense
+			fallback={<div className="wterm-herdr-page wterm-renderer--loading" />}
+		>
+			<WtermPanel subPath="" />
 		</Suspense>
 	);
 }
 
-type SidebarSettingKey = "showHerdrInSidebar" | "showWtermInSidebar";
-
-function SidebarEntryAccessory({
-	herdrIcon = false,
-	settingKey,
-}: {
-	herdrIcon?: boolean;
-	settingKey: SidebarSettingKey;
-}) {
-	const { isLoading, values } = useSettings();
-	const markerRef = useRef<HTMLSpanElement>(null);
-	const enabled = values?.[settingKey] === true;
-
-	useLayoutEffect(() => {
-		if (isLoading) return;
-		const row = markerRef.current?.closest<HTMLElement>(
-			".bb-sidebar-hover-actions-row",
-		);
-		if (!row) return;
-		row.hidden = !enabled;
-		const icon = herdrIcon
-			? row.querySelector<SVGElement>("button svg")
-			: null;
-		const previousIconStyle = icon?.getAttribute("style") ?? null;
-		if (icon) {
-			icon.style.backgroundColor = "currentColor";
-			icon.style.maskImage = HERDR_RAM_MASK_URL;
-			icon.style.maskPosition = "center";
-			icon.style.maskRepeat = "no-repeat";
-			icon.style.maskSize = "contain";
-			icon.style.setProperty("-webkit-mask-image", HERDR_RAM_MASK_URL);
-			icon.style.setProperty("-webkit-mask-position", "center");
-			icon.style.setProperty("-webkit-mask-repeat", "no-repeat");
-			icon.style.setProperty("-webkit-mask-size", "contain");
-		}
-		return () => {
-			row.hidden = false;
-			if (!icon) return;
-			if (previousIconStyle === null) icon.removeAttribute("style");
-			else icon.setAttribute("style", previousIconStyle);
-		};
-	}, [enabled, herdrIcon, isLoading]);
-
-	return <span ref={markerRef} className="hidden" aria-hidden="true" />;
-}
-
-function HerdrSidebarAccessory() {
-	return (
-		<SidebarEntryAccessory settingKey="showHerdrInSidebar" herdrIcon />
-	);
-}
-
-function WtermSidebarAccessory() {
-	return <SidebarEntryAccessory settingKey="showWtermInSidebar" />;
-}
-
 function useTrackOpenWtermTab(threadId: string, params: unknown): void {
 	const terminalId = hasTerminalParams(params) ? params.terminalId : null;
-	useEffect(() => trackWtermMount(threadId), [threadId]);
+	useEffect(() => {
+		const untrack = trackWtermMount(threadId);
+		return () => {
+			untrack();
+			if (!threadId || !terminalId) return;
+			void callBackendRpc("closeTerminalIfTabMissing", {
+				threadId,
+				terminalId,
+			}).catch((error) => {
+				console.warn(
+					`[plugin:${PLUGIN_ID}] failed to reconcile closed terminal tab: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			});
+		};
+	}, [terminalId, threadId]);
 	useEffect(() => {
 		if (terminalId) writeLastTerminalId(threadId, terminalId);
 	}, [terminalId, threadId]);
@@ -140,6 +95,7 @@ async function callBackendRpc(
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify(input ?? null),
+			signal: AbortSignal.timeout(10_000),
 		},
 	);
 	const body = (await response.json().catch(() => null)) as {
@@ -194,18 +150,16 @@ function Picker({
 		request.current.mounted = true;
 		const generation = request.current.generation;
 		setList({ kind: "loading" });
-		rpc
-			.call("listSessions", { threadId })
-			.then(
-				(next) => {
-					if (isCurrent(generation))
-						setList(pickerStateFromRpc({ status: "fulfilled", value: next }));
-				},
-				(error) => {
-					if (isCurrent(generation))
-						setList(pickerStateFromRpc({ status: "rejected", reason: error }));
-				},
-			);
+		rpc.call("listSessions", { threadId }).then(
+			(next) => {
+				if (isCurrent(generation))
+					setList(pickerStateFromRpc({ status: "fulfilled", value: next }));
+			},
+			(error) => {
+				if (isCurrent(generation))
+					setList(pickerStateFromRpc({ status: "rejected", reason: error }));
+			},
+		);
 		return () => {
 			request.current.mounted = false;
 			request.current.generation += 1;
@@ -214,21 +168,19 @@ function Picker({
 	const select = (id: string) => replace({ schemaVersion: 1, terminalId: id });
 	const restart = (id: string) => {
 		const generation = request.current.generation;
-		return rpc
-			.call("restartTerminal", { threadId, terminalId: id })
-			.then(
-				(updated) => {
-					if (!isCurrent(generation) || list.kind !== "loaded") return;
-					setList({
-						kind: "loaded",
-						items: list.items.map((item) =>
-							item.id === id ? (updated as PickerSession) : item,
-						),
-					});
-					select(updated.id);
-				},
-				() => undefined,
-			);
+		return rpc.call("restartTerminal", { threadId, terminalId: id }).then(
+			(updated) => {
+				if (!isCurrent(generation) || list.kind !== "loaded") return;
+				setList({
+					kind: "loaded",
+					items: list.items.map((item) =>
+						item.id === id ? (updated as PickerSession) : item,
+					),
+				});
+				select(updated.id);
+			},
+			() => undefined,
+		);
 	};
 	const { running, exited } =
 		list.kind === "loaded"
@@ -305,9 +257,7 @@ function Picker({
 					<section>
 						<h3 className="text-xs font-medium uppercase">Running</h3>
 						{running.length === 0 ? (
-							<p className="text-xs text-muted-foreground">
-								No running terminals.
-							</p>
+							<p className="text-xs text-muted-foreground">No running terminals.</p>
 						) : (
 							running.map(renderItem)
 						)}
@@ -382,9 +332,7 @@ function SelectedTerminal({
 							retryTimer = window.setTimeout(verify, 400);
 							return;
 						}
-						setSession(
-							items.find((item) => item.id === params.terminalId) ?? null,
-						);
+						setSession(items.find((item) => item.id === params.terminalId) ?? null);
 						setState(presence);
 					},
 					() => {
@@ -454,8 +402,7 @@ type ReplaceCurrentPluginTabHook = () => (input: {
 	actionId: string;
 	title: string;
 	params: never;
-	experimental_claimedTerminalId?: string | null;
-}) => void;
+}) => boolean;
 
 function HostTerminalAction({
 	threadId,
@@ -476,9 +423,6 @@ function HostTerminalAction({
 					actionId: "terminal",
 					title: "Wterm terminal",
 					params: nextParams as never,
-					experimental_claimedTerminalId: hasTerminalParams(nextParams)
-						? nextParams.terminalId
-						: null,
 				})
 			}
 		/>
@@ -537,8 +481,7 @@ function OpenSessionTerminalAction() {
 						throw error;
 					}
 				} catch (error) {
-					const message =
-						error instanceof Error ? error.message : String(error);
+					const message = error instanceof Error ? error.message : String(error);
 					console.warn(
 						`[plugin:${PLUGIN_ID}] failed to open session terminal: ${message}`,
 					);
@@ -553,7 +496,9 @@ export default definePluginApp((app) => {
 	app.composer.customize({
 		id: "session-terminal",
 		scopes: ["thread"],
-		actions: [{ id: "open-session-terminal", component: OpenSessionTerminalAction }],
+		actions: [
+			{ id: "open-session-terminal", component: OpenSessionTerminalAction },
+		],
 	});
 	app.slots.navPanel({
 		id: "herdr",
@@ -561,7 +506,6 @@ export default definePluginApp((app) => {
 		icon: "Terminal",
 		path: "herdr",
 		component: HerdrPage,
-		experimental_sidebarAccessory: HerdrSidebarAccessory,
 	});
 	app.slots.navPanel({
 		id: "wterm",
@@ -569,7 +513,6 @@ export default definePluginApp((app) => {
 		icon: "Terminal",
 		path: "wterm",
 		component: WtermPage,
-		experimental_sidebarAccessory: WtermSidebarAccessory,
 	});
 	app.slots.threadPanelAction({
 		id: PANEL_ACTION_ID,
@@ -589,7 +532,6 @@ export default definePluginApp((app) => {
 				openPanel({
 					title: PANEL_TITLE,
 					params: { schemaVersion: 1, terminalId },
-					experimental_claimedTerminalId: terminalId,
 				});
 			} catch (error) {
 				release();
@@ -600,10 +542,10 @@ export default definePluginApp((app) => {
 			const { threadId: contextThreadId } = useBbContext();
 			const currentThreadId = threadId || contextThreadId || "";
 			useTrackOpenWtermTab(currentThreadId, params);
-			const useReplaceCurrent = Reflect.get(
+			const useReplaceCurrent = Object.getOwnPropertyDescriptor(
 				BbApp,
 				"experimental_useReplaceCurrentPluginTab",
-			) as ReplaceCurrentPluginTabHook | undefined;
+			)?.value as ReplaceCurrentPluginTabHook | undefined;
 			return useReplaceCurrent ? (
 				<HostTerminalAction
 					threadId={currentThreadId}

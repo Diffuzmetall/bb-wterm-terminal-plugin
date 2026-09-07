@@ -6,7 +6,6 @@ import {
   type CSSProperties,
   type ClipboardEvent as ReactClipboardEvent,
   type MouseEvent as ReactMouseEvent,
-  type UIEvent as ReactUIEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import { GhosttyCore } from "@wterm/ghostty";
@@ -17,8 +16,8 @@ import { terminalLinkAction, terminalLinkHref } from "./terminal-links.js";
 import { getPluginToken } from "./plugin-token.js";
 import {
   Osc52ClipboardFilter,
+  approveClipboardText,
   copyTextToClipboard,
-  flushPendingClipboardCopy,
 } from "./osc52-clipboard.js";
 import { createRetryablePromiseCache } from "./retryable-cache.js";
 import {
@@ -30,9 +29,7 @@ import {
   type CellLayout,
   type GridPoint,
 } from "./terminal-selection.js";
-// @ts-expect-error CSS side effects are resolved by the plugin bundler.
 import "@wterm/react/css";
-// @ts-expect-error CSS side effects are resolved by the plugin bundler.
 import "./wterm-renderer.css";
 
 const PLUGIN_ID = "wterm-terminal-preview";
@@ -49,6 +46,7 @@ const anyEventMouseModes = new WeakMap<
   object,
   { enabled: boolean; generation: number }
 >();
+type AnyEventCore = Parameters<typeof anyEventMouseModes.get>[0];
 const MIN_USABLE_TERMINAL_CELLS = 2;
 const TERMINAL_RESIZE_SETTLE_MS = 250;
 
@@ -88,7 +86,7 @@ export function computeFollowBottom(element: {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
 }
 
-export function getAnyEventMouseModeState(core: object): {
+export function getAnyEventMouseModeState(core: AnyEventCore): {
   enabled: boolean;
   generation: number;
 } {
@@ -129,7 +127,10 @@ export function encodeAnyEventMouseMove({
  * expose it. Track that one DEC mode at the write boundary, then let Wterm DOM
  * provide its supported click, wheel, and button-drag subset through mode 1002.
  */
-export function supportAnyEventMouseMode(core: GhosttyCore): GhosttyCore {
+export function supportAnyEventMouseMode(
+  core: GhosttyCore,
+  onClipboardRequest: (text: string) => void = () => {},
+): GhosttyCore {
   const decodeMouseControl = new TextDecoder("latin1");
   const writeRaw = core.writeRaw.bind(core);
   const writeString = core.writeString.bind(core);
@@ -138,14 +139,13 @@ export function supportAnyEventMouseMode(core: GhosttyCore): GhosttyCore {
   const supportedMode = core.mouseTracking.bind(core);
   const getCell = core.getCell?.bind(core);
   const getScrollbackCell = core.getScrollbackCell?.bind(core);
-  const decorateCell = <Cell extends { linkUri?: string }>(cell: Cell): Cell => {
+  const decorateCell = <Cell extends { linkUri?: string }>(
+    cell: Cell,
+  ): Cell => {
     const href = terminalLinkHref(cell.linkUri);
     return href === cell.linkUri ? cell : ({ ...cell, linkUri: href } as Cell);
   };
-  // Herdr's copy-on-select arrives outside the original pointer gesture.
-  // Try the synchronous path immediately; it still falls back to the queued
-  // async write when the browser refuses a script-initiated copy.
-  const osc52 = new Osc52ClipboardFilter(copyTextToClipboard);
+  const osc52 = new Osc52ClipboardFilter(onClipboardRequest);
   let anyEventMouse = false;
   let anyEventGeneration = 0;
   let controlTail = "";
@@ -280,14 +280,17 @@ const ghosttyWasmObjectUrl = createRetryablePromiseCache(async () => {
 
 export async function loadGhosttyCore(
   wasmUrl = GHOSTTY_WASM_URL,
+  onClipboardRequest: (text: string) => void = () => {},
 ): Promise<GhosttyCore> {
   if (wasmUrl !== GHOSTTY_WASM_URL) {
     return supportAnyEventMouseMode(
       await GhosttyCore.load(ghosttyCoreOptions(wasmUrl)),
+      onClipboardRequest,
     );
   }
   return supportAnyEventMouseMode(
     await GhosttyCore.load(ghosttyCoreOptions(await ghosttyWasmObjectUrl())),
+    onClipboardRequest,
   );
 }
 
@@ -388,6 +391,7 @@ export function terminalCellLayout(
 export function refitTerminalAfterFontChange(
   instance: NonNullable<TerminalHandle["instance"]>,
 ): boolean {
+  // SAFETY: Wterm exposes the font metrics fields consumed by this helper.
   const terminal = instance as unknown as WtermFontMetricsBoundary;
   const metrics = terminal._measureCharSize?.();
   if (!metrics || !hasRenderedSize(terminal.element)) return false;
@@ -432,6 +436,9 @@ export function WtermRenderer({
   const [error, setError] = useState<unknown>(null);
   const [ready, setReady] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
+  type ClipboardRequest = { text: string };
+  const [clipboardRequest, setClipboardRequest] =
+    useState<ClipboardRequest | null>(null);
   const clearSelectionBoundaryRef = useRef<(() => void) | null>(null);
   const tuiCopyDragCleanupRef = useRef<(() => void) | null>(null);
   const resizeTimerRef = useRef<number | null>(null);
@@ -455,17 +462,29 @@ export function WtermRenderer({
     "--term-row-height": `${Math.ceil(fontSizePx * 1.2)}px`,
   };
 
+  const approveClipboardRequest = useCallback(async () => {
+    const request = clipboardRequest;
+    if (!request) return;
+    if (await approveClipboardText(request.text)) {
+      setClipboardRequest((current) => (current === request ? null : current));
+    }
+  }, [clipboardRequest]);
+
   useEffect(() => {
     markWtermPerformance("effect-start");
     let alive = true;
+    const onClipboardRequest = (text: string) => {
+      if (alive) setClipboardRequest({ text });
+    };
     setCore(null);
+    setClipboardRequest(null);
     setError(null);
     setReady(false);
     writesOpenRef.current = false;
     pendingWritesRef.current = [];
     lastResizeRef.current = { cols: 0, rows: 0 };
     void loadNerdFont().catch(() => undefined);
-    void loadGhosttyCore(wasmUrl).then(
+    void loadGhosttyCore(wasmUrl, onClipboardRequest).then(
       (loaded) => {
         if (alive) {
           markWtermPerformance("core-ready");
@@ -577,7 +596,6 @@ export function WtermRenderer({
         return;
       }
 
-      flushPendingClipboardCopy();
       clearSelectionBoundaryRef.current?.();
       const selectionRoot = event.currentTarget;
       document.documentElement.dataset.wtermNativeSelection = "active";
@@ -611,12 +629,19 @@ export function WtermRenderer({
 
   const handleTuiCopyDragStart = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>) => {
-      flushPendingClipboardCopy();
       if (event.button !== 0 || event.shiftKey) return;
       tuiCopyDragCleanupRef.current?.();
       const instance = terminalRef.current?.instance;
       const bridge = instance?.bridge;
-      if (!instance || !bridge || bridge.mouseTracking() === 0) return;
+      if (
+        !instance ||
+        !bridge ||
+        typeof bridge.mouseTracking !== "function" ||
+        bridge.mouseTracking() === 0
+      )
+        return;
+      const terminalBridge = bridge;
+      // SAFETY: Wterm exposes the font metrics fields consumed by this helper.
       const layout = terminalCellLayout(
         instance as unknown as WtermFontMetricsBoundary,
       );
@@ -634,8 +659,9 @@ export function WtermRenderer({
         tuiDragRef.current = null;
         if (!drag || up.button !== 0) return;
         const end = cellAtPointClamped(drag.layout, up.clientX, up.clientY);
-        if (!selectionMoved(drag.start, end)) return;
-        const text = extractViewportText(bridge, drag.start, end);
+        if (!end || !selectionMoved(drag.start, end)) return;
+        if (!end) return;
+        const text = extractViewportText(terminalBridge, drag.start, end);
         if (text.length > 0) copyTextToClipboard(text);
       };
       const cleanup = () => {
@@ -680,6 +706,7 @@ export function WtermRenderer({
       }
       if (!mode.enabled || !bridge.mouseSgr?.()) return;
 
+      // SAFETY: Wterm exposes the font metrics fields consumed by this helper.
       const layout =
         anyEventLayoutRef.current ??
         terminalCellLayout(instance as unknown as WtermFontMetricsBoundary);
@@ -730,6 +757,7 @@ export function WtermRenderer({
     setReady(true);
     const instance = terminalRef.current?.instance;
     if (!instance) return;
+    // SAFETY: Wterm exposes the font metrics fields consumed by this helper.
     anyEventLayoutRef.current = terminalCellLayout(
       instance as unknown as WtermFontMetricsBoundary,
     );
@@ -874,28 +902,47 @@ export function WtermRenderer({
     );
   }
   return (
-    <Terminal
-      ref={terminalRef}
-      core={core}
-      autoResize
-      onReady={handleReady}
-      onError={setError}
-      onData={handleData}
-      onKeyDownCapture={() => markWtermPerformance("keydown")}
-      onResize={handleResize}
-      onMouseDown={handleMouseDown}
-      onMouseDownCapture={handleTuiCopyDragStart}
-      onMouseMoveCapture={handleAnyEventMouseMove}
-      onMouseLeave={() => {
-        lastAnyEventCellRef.current = null;
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        minHeight: 0,
       }}
-      onWheelCapture={handleWheelCapture}
-      onCopyCapture={handleCopy}
-      onClick={handleLinkClick}
-      style={terminalFontStyle}
-      className="wterm-renderer"
-      data-renderer="ghostty"
-    />
+    >
+      {clipboardRequest && (
+        <button
+          type="button"
+          aria-label="Copy terminal clipboard request"
+          onClick={approveClipboardRequest}
+          style={{ flex: "none" }}
+        >
+          Copy terminal clipboard request
+        </button>
+      )}
+      <Terminal
+        ref={terminalRef}
+        core={core}
+        autoResize
+        onReady={handleReady}
+        onError={setError}
+        onData={handleData}
+        onKeyDownCapture={() => markWtermPerformance("keydown")}
+        onResize={handleResize}
+        onMouseDown={handleMouseDown}
+        onMouseDownCapture={handleTuiCopyDragStart}
+        onMouseMoveCapture={handleAnyEventMouseMove}
+        onMouseLeave={() => {
+          lastAnyEventCellRef.current = null;
+        }}
+        onWheelCapture={handleWheelCapture}
+        onCopyCapture={handleCopy}
+        onClick={handleLinkClick}
+        style={{ ...terminalFontStyle, flex: 1, height: "auto" }}
+        className="wterm-renderer"
+        data-renderer="ghostty"
+      />
+    </div>
   );
 }
 

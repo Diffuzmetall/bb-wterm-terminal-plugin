@@ -18,6 +18,7 @@ import { preloadTerminalAssets, TerminalRenderer } from "./wterm-renderer.js";
 import { PLUGIN_ID, getPluginToken } from "./plugin-token.js";
 import { terminalLinkAction } from "./terminal-links.js";
 import type { PickerSession } from "./picker-state.js";
+import { toast } from "sonner";
 
 export const preloadTerminalPanel = preloadTerminalAssets;
 

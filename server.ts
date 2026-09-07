@@ -11,12 +11,18 @@ import {
 	reconcileLinkedRecords,
 	type LinkedTerminalRecord,
 } from "./linked-terminal-records.js";
+import { hasTerminalParams } from "./session-terminal-composer.js";
 
 export const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MAX_FILE_UPLOAD_BYTES = 25 * 1024 * 1024;
 export const HERDR_TITLE = "Herdr";
 export const HERDR_COMMAND = "herdr";
 export const WTERM_NAV_TITLE = "Wterm";
+const PLUGIN_ID = "wterm-terminal-preview";
+const TERMINAL_PANEL_ACTION_ID = "terminal";
+const TAB_CLOSE_POLL_MS = 150;
+const TAB_CLOSE_MISSING_CONFIRMATIONS = 2;
+const TAB_CLOSE_MAX_POLLS = 3;
 const UPLOAD_PATH = "/upload";
 const WASM_PATH = "/ghostty-vt.wasm";
 const NERD_FONT_PATH = "/symbols-nerd-font-mono-v3.5.0.woff2";
@@ -56,6 +62,13 @@ export const wtermRpcContract = defineRpcContract({
 	createTerminal: {
 		input: z.object({ threadId: z.string().min(1) }),
 		output: session,
+	},
+	closeTerminalIfTabMissing: {
+		input: z.object({
+			threadId: z.string().min(1),
+			terminalId: z.string().min(1),
+		}),
+		output: z.boolean(),
 	},
 	restartTerminal: {
 		input: z.object({
@@ -317,6 +330,87 @@ async function loadLinkedTerminals(bb: BbPluginApi, threadId: string) {
 	return { sessions, unavailableIds };
 }
 
+type ThreadTab = Awaited<
+	ReturnType<BbPluginApi["sdk"]["threads"]["tabs"]["get"]>
+>["tabs"][number];
+
+export function hasOpenTerminalPanelTab(
+	tabs: readonly ThreadTab[],
+	terminalId: string,
+): boolean {
+	return tabs.some((tab) => {
+		if (
+			tab.kind !== "plugin-panel" ||
+			tab.pluginId !== PLUGIN_ID ||
+			tab.actionId !== TERMINAL_PANEL_ACTION_ID ||
+			tab.paramsJson === null
+		) {
+			return false;
+		}
+		try {
+			const params: unknown = JSON.parse(tab.paramsJson);
+			return hasTerminalParams(params) && params.terminalId === terminalId;
+		} catch {
+			return false;
+		}
+	});
+}
+
+const wait = (milliseconds: number) =>
+	new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+
+async function terminalTabIsConfirmedMissing(
+	bb: BbPluginApi,
+	threadId: string,
+	terminalId: string,
+): Promise<boolean> {
+	let consecutiveMissing = 0;
+	for (let poll = 0; poll < TAB_CLOSE_MAX_POLLS; poll += 1) {
+		await wait(TAB_CLOSE_POLL_MS);
+		try {
+			const { tabs } = await bb.sdk.threads.tabs.get({ threadId });
+			if (hasOpenTerminalPanelTab(tabs, terminalId)) {
+				consecutiveMissing = 0;
+			} else {
+				consecutiveMissing += 1;
+				if (consecutiveMissing >= TAB_CLOSE_MISSING_CONFIRMATIONS) return true;
+			}
+		} catch {
+			consecutiveMissing = 0;
+		}
+	}
+	return false;
+}
+
+async function closeLinkedTerminalIfTabMissing(
+	bb: BbPluginApi,
+	threadId: string,
+	terminalId: string,
+): Promise<boolean> {
+	if (
+		!(await linkedTerminalRecords(bb, threadId)).some(
+			({ id }) => id === terminalId,
+		)
+	) {
+		return false;
+	}
+	if (!(await terminalTabIsConfirmedMissing(bb, threadId, terminalId))) {
+		return false;
+	}
+	return withLinkedTerminalIds(bb, threadId, async (current) => {
+		if (!current.some(({ id }) => id === terminalId)) return false;
+		const { tabs } = await bb.sdk.threads.tabs.get({ threadId });
+		if (hasOpenTerminalPanelTab(tabs, terminalId)) return false;
+		await bb.sdk.terminals.close({ terminalId, mode: "force" });
+		await saveLinkedTerminalRecords(
+			bb,
+			threadId,
+			current.filter(({ id }) => id !== terminalId),
+		);
+		return true;
+	});
+}
+
 async function sessionsForThread(bb: BbPluginApi, threadId: string) {
 	const [legacy, linked] = await Promise.all([
 		bb.sdk.terminals.list({ scope: legacyScope(threadId) }),
@@ -365,7 +459,12 @@ async function resolveUploadTerminal(
 	}
 	try {
 		const session = await bb.sdk.terminals.get({ terminalId });
-		if (!session?.id || !liveNavTerminalSession([session])) {
+		if (
+			!session?.id ||
+			session.threadId !== null ||
+			session.environmentId !== null ||
+			!liveNavTerminalSession([session])
+		) {
 			throw new UploadError(404, "terminal is not an active sidebar session");
 		}
 		return mapSession(session);
@@ -390,7 +489,10 @@ async function handleUpload(
 		if (context.req.raw.signal.aborted) {
 			throw new UploadError(400, "upload aborted");
 		}
-		const target = buildUploadPath(terminal.initialCwd, fileName);
+		if (!terminal.hostId) {
+			throw new UploadError(404, "terminal has no file host");
+		}
+		const target = buildUploadPath(terminal.initialCwd ?? "", fileName);
 		const expectedSha256 = createHash("sha256").update(bytes).digest("hex");
 		const result = await bb.sdk.files.write({
 			hostId: terminal.hostId,
@@ -624,6 +726,9 @@ export default function plugin(bb: BbPluginApi) {
 			await rememberLinkedTerminal(bb, threadId, result.id);
 			return mapSession(result);
 		},
+		async closeTerminalIfTabMissing({ threadId, terminalId }) {
+			return closeLinkedTerminalIfTabMissing(bb, threadId, terminalId);
+		},
 		async openHerdr() {
 			const hostId = pickConnectedHostId(await bb.sdk.hosts.list());
 			return mapSession(
@@ -733,25 +838,35 @@ export default function plugin(bb: BbPluginApi) {
 		"GET",
 		WASM_PATH,
 		async () =>
-			new Response(await ghosttyWasmBytes(), {
-				headers: {
-					"cache-control": "public, max-age=31536000, immutable",
-					"content-type": "application/wasm",
+			new Response(
+				// SAFETY: Response accepts the binary asset body at runtime; DOM's
+				// BodyInit declaration does not include Uint8Array<ArrayBufferLike>.
+				(await ghosttyWasmBytes()) as unknown as BodyInit,
+				{
+					headers: {
+						"cache-control": "public, max-age=31536000, immutable",
+						"content-type": "application/wasm",
+					},
 				},
-			}),
+			),
 		{ auth: "token" },
 	);
 	bb.http.route(
 		"GET",
 		NERD_FONT_PATH,
 		async () =>
-			new Response(await nerdFontBytes(), {
-				headers: {
-					"cache-control": "public, max-age=31536000, immutable",
-					"content-type": "font/woff2",
-					"x-content-type-options": "nosniff",
+			new Response(
+				// SAFETY: Response accepts the binary asset body at runtime; DOM's
+				// BodyInit declaration does not include Uint8Array<ArrayBufferLike>.
+				(await nerdFontBytes()) as unknown as BodyInit,
+				{
+					headers: {
+						"cache-control": "public, max-age=31536000, immutable",
+						"content-type": "font/woff2",
+						"x-content-type-options": "nosniff",
+					},
 				},
-			}),
+			),
 		{ auth: "token" },
 	);
 }

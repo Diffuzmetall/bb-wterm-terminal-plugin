@@ -4,7 +4,6 @@ import {
   clearTerminalSelection,
   isUsableTerminalSize,
   shouldApplyTerminalResize,
-  shouldClearSelectionOnWheel,
   computeFollowBottom,
   disposeGhosttyCore,
   encodeAnyEventMouseMove,
@@ -111,6 +110,25 @@ describe("collapsed terminal sizes", () => {
       ),
     );
     expect(source).not.toContain("resizeFrameRef");
+  });
+});
+
+describe("SDK typecheck regressions", () => {
+  it("guards pointer-up coordinates before comparing grid points", () => {
+    const source = readFileSync(
+      new URL("./wterm-renderer.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain("if (!end || !selectionMoved(drag.start, end)) return;");
+  });
+
+  it("keeps terminal-link failures on the imported toast path", () => {
+    const source = readFileSync(
+      new URL("./terminal-panel.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain('import { toast } from "sonner";');
+    expect(source).toContain("toast.error(\"BB could not open this terminal file.\");");
   });
 });
 
@@ -255,17 +273,11 @@ describe("DEC 1003 any-event mouse motion", () => {
 });
 
 describe("OSC 52 from TUI output", () => {
-  it("attempts a synchronous clipboard copy immediately", () => {
+  it("queues remote clipboard data without treating TUI output as consent", () => {
     const execCommand = vi.fn(() => true);
-    const field = {
-      value: "",
-      style: { position: "", left: "" },
-      setAttribute: vi.fn(),
-      select: vi.fn(),
-      remove: vi.fn(),
-    };
+    const onClipboardRequest = vi.fn();
     vi.stubGlobal("document", {
-      createElement: () => field,
+      createElement: vi.fn(),
       execCommand,
       body: { append: vi.fn() },
     });
@@ -277,10 +289,34 @@ describe("OSC 52 from TUI output", () => {
       writeString: vi.fn(),
       mouseTracking: vi.fn(() => 0),
     };
-    const wrapped = supportAnyEventMouseMode(core as never);
+    const wrapped = supportAnyEventMouseMode(core as never, onClipboardRequest);
     wrapped.writeString(`\x1b]52;c;${btoa("herdr")}`);
 
-    expect(execCommand).toHaveBeenCalledWith("copy");
-    expect(field.value).toBe("herdr");
+    expect(onClipboardRequest).toHaveBeenCalledWith("herdr");
+    expect(execCommand).not.toHaveBeenCalled();
+  });
+
+  it("keeps clipboard requests isolated between renderer cores", () => {
+    const coreFixture = () => ({
+      init: vi.fn(),
+      resize: vi.fn(),
+      writeRaw: vi.fn(),
+      writeString: vi.fn(),
+      mouseTracking: vi.fn(() => 0),
+    });
+    const requestsA: string[] = [];
+    const requestsB: string[] = [];
+    const wrappedA = supportAnyEventMouseMode(coreFixture() as never, (text) => {
+      requestsA.push(text);
+    });
+    const wrappedB = supportAnyEventMouseMode(coreFixture() as never, (text) => {
+      requestsB.push(text);
+    });
+
+    wrappedA.writeString(`\x1b]52;c;${btoa("panel-a")}\x07`);
+    wrappedB.writeString(`\x1b]52;c;${btoa("panel-b")}\x07`);
+
+    expect(requestsA).toEqual(["panel-a"]);
+    expect(requestsB).toEqual(["panel-b"]);
   });
 });

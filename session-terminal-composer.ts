@@ -39,7 +39,10 @@ export function readLastTerminalId(threadId: string): string | null {
 	}
 }
 
-export function writeLastTerminalId(threadId: string, terminalId: string): void {
+export function writeLastTerminalId(
+	threadId: string,
+	terminalId: string,
+): void {
 	try {
 		window.localStorage.setItem(
 			terminalStorageKey(threadId),
