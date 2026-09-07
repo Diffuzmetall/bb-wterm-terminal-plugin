@@ -14,9 +14,6 @@ This repository is an early public preview. The plugin ID is
 The current release is `v0.4.0`. It adds clickable OSC 8 web/file links,
 bounded Kitty Graphics rendering, and optional full-page Herdr/Wterm launchers.
 
-See [`docs/PORTABILITY.md`](docs/PORTABILITY.md) for a preliminary assessment
-and migration sketch for using the terminal outside BB.
-
 ## Features
 
 - Ghostty terminal emulation through `@wterm/ghostty` 0.5.0 and WebAssembly.
