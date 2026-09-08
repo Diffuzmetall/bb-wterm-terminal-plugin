@@ -27,7 +27,7 @@
     "name": "Wterm Terminal Preview",
     "description": "Use a Ghostty-backed terminal attached to the current BB thread.",
     "branding": {
-      "icon": "Terminal"
+      "icon": "./assets/herdr.svg"
     },
     "server": "./server.ts",
     "app": "./app.tsx"
