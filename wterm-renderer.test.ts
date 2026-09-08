@@ -294,17 +294,17 @@ describe("Ghostty graphics configuration and lifecycle", () => {
       new URL("./herdr-panel.tsx", import.meta.url),
       "utf8",
     );
-    const labelIndex = source.indexOf(
-      '{opening ? "Opening…" : "New terminal"}',
-    );
+    const labelIndex = source.indexOf('aria-label="New terminal"');
     const handler = source.slice(
       source.lastIndexOf("<button", labelIndex),
       source.indexOf("</button>", labelIndex),
     );
-    expect(source).toContain("preloadTerminalPanel");
-    expect(handler.indexOf("preloadTerminalPanel()")).toBeLessThan(
-      handler.indexOf("createTerminal()"),
-    );
+    const preloadIndex = handler.indexOf("preloadTerminalPanel()");
+    const createIndex = handler.indexOf("createTerminal()");
+    expect(labelIndex).toBeGreaterThan(-1);
+    expect(preloadIndex).toBeGreaterThan(-1);
+    expect(createIndex).toBeGreaterThan(-1);
+    expect(preloadIndex).toBeLessThan(createIndex);
   });
 
   it("keeps Kitty storage bounded and uses the terminal dark palette", () => {

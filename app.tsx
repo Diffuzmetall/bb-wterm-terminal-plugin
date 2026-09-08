@@ -41,6 +41,12 @@ const WtermPanel = lazy(() =>
 	import("./herdr-panel.js").then((module) => ({ default: module.WtermPanel })),
 );
 
+function HerdrHeaderContent() {
+	return (
+		<div id="wterm-herdr-toolbar-slot" className="wterm-herdr-toolbar-slot" />
+	);
+}
+
 function HerdrPage() {
 	return (
 		<Suspense
@@ -506,6 +512,7 @@ export default definePluginApp((app) => {
 		icon: "Terminal",
 		path: "herdr",
 		component: HerdrPage,
+		headerContent: HerdrHeaderContent,
 	});
 	app.slots.navPanel({
 		id: "wterm",

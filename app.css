@@ -11,6 +11,19 @@
   min-height: 0;
 }
 
+.wterm-herdr-toolbar-slot {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+}
+
+.wterm-herdr-toolbar-slot .wterm-upload-toolbar {
+  width: 100%;
+  padding: 0;
+  border-bottom: 0;
+  background: transparent;
+}
+
 .wterm-session-terminal-action {
   align-items: center;
   background: transparent;

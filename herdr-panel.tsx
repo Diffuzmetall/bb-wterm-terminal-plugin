@@ -80,7 +80,12 @@ function HerdrTerminalPanel() {
 		);
 	}
 	if (state.kind === "loading") return <PanelLoading />;
-	return <NavTerminal session={state.session} />;
+	return (
+		<NavTerminal
+			session={state.session}
+			toolbarTargetId="wterm-herdr-toolbar-slot"
+		/>
+	);
 }
 
 export default function HerdrPanel(_props: PluginNavPanelProps) {
@@ -288,16 +293,21 @@ export function WtermPanel(_props: PluginNavPanelProps) {
 	return (
 		<div className="flex h-full min-h-0 flex-col bg-background text-foreground">
 			<div
-				className="flex shrink-0 items-center gap-1 border-b p-1"
+				className="flex shrink-0 items-end gap-0 border-b bg-muted/30 px-2 pt-1"
 				role="tablist"
 				aria-label="Wterm terminals"
 			>
 				{state.sessions.map((session, index) => {
 					const name = session.title || `Terminal ${index + 1}`;
+					const selected = session.id === state.activeId;
 					return (
 						<div
 							key={session.id}
-							className="flex min-w-0 items-center rounded border"
+							className={`flex min-w-0 items-center border transition-colors ${
+								selected
+									? "-mb-px border-border border-b-background bg-background"
+									: "border-transparent border-r-border/60 text-muted-foreground hover:bg-muted/60"
+							}`}
 							draggable={editingId !== session.id}
 							onDragStart={(event) => {
 								event.dataTransfer.effectAllowed = "move";
@@ -338,7 +348,7 @@ export function WtermPanel(_props: PluginNavPanelProps) {
 									role="tab"
 									aria-controls="wterm-panel"
 									aria-selected={session.id === state.activeId}
-									className="max-w-48 truncate px-2 py-1 text-xs aria-selected:bg-muted"
+									className="max-w-48 truncate px-2.5 py-2 text-xs font-medium transition-colors aria-selected:text-foreground"
 									onClick={() => select(session.id)}
 								>
 									{name}
@@ -350,7 +360,7 @@ export function WtermPanel(_props: PluginNavPanelProps) {
 									aria-label={`${name} options`}
 									aria-haspopup="menu"
 									aria-expanded={menuId === session.id}
-									className="px-2 py-1 text-xs"
+									className="px-2 py-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
 									onClick={() =>
 										setMenuId((current) => (current === session.id ? null : session.id))
 									}
@@ -432,14 +442,16 @@ export function WtermPanel(_props: PluginNavPanelProps) {
 				})}
 				<button
 					type="button"
-					className="rounded border px-2 py-1 text-xs"
+					aria-label="New terminal"
+					title="New terminal"
+					className="mb-1 ml-1 flex size-7 items-center justify-center border border-dashed text-sm text-muted-foreground transition-colors hover:border-solid hover:bg-muted hover:text-foreground"
 					disabled={opening}
 					onClick={() => {
 						void preloadTerminalPanel().catch(() => undefined);
 						void createTerminal();
 					}}
 				>
-					{opening ? "Opening…" : "New terminal"}
+					{opening ? "…" : "+"}
 				</button>
 			</div>
 			{actionError ? (
@@ -490,7 +502,13 @@ function PanelError({
 	);
 }
 
-function NavTerminal({ session }: { session: PickerSession }) {
+function NavTerminal({
+	session,
+	toolbarTargetId,
+}: {
+	session: PickerSession;
+	toolbarTargetId?: string;
+}) {
 	const attachment = useLegacyTerminalAttachment(session.id);
 	return (
 		<div className="wterm-herdr-page">
@@ -499,6 +517,7 @@ function NavTerminal({ session }: { session: PickerSession }) {
 				terminalId={session.id}
 				attachment={attachment}
 				session={session}
+				toolbarTargetId={toolbarTargetId}
 			/>
 		</div>
 	);

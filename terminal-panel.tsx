@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ChangeEvent,
@@ -8,6 +9,7 @@ import {
   type DragEvent,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import type { PluginThreadPanelProps } from "@bb/plugin-sdk/app";
 import { useBbNavigate } from "@bb/plugin-sdk/app";
 import {
@@ -204,11 +206,13 @@ export function TerminalWithUpload({
   terminalId,
   threadId,
   session,
+  toolbarTargetId,
 }: {
   attachment: TerminalAttachment | null;
   terminalId: string;
   threadId?: string;
   session: PickerSession | null;
+  toolbarTargetId?: string;
 }) {
   const navigate = useBbNavigate();
   const openTerminalLink = useCallback(
@@ -217,7 +221,9 @@ export function TerminalWithUpload({
       if (!action) return false;
       if (action.kind === "url") {
         if (navigate.openUrl(action.url)) return true;
-        return window.open(action.url, "_blank", "noopener,noreferrer") !== null;
+        return (
+          window.open(action.url, "_blank", "noopener,noreferrer") !== null
+        );
       }
       if (!session?.hostId) {
         toast.error("This terminal has no file host to open the link on.");
@@ -236,9 +242,16 @@ export function TerminalWithUpload({
   );
   const [transfer, setTransfer] = useState<TransferState>({ kind: "idle" });
   const [fontSize, setFontSize] = useState(readTerminalFontSize);
+  const [toolbarTarget, setToolbarTarget] = useState<HTMLElement | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const activeUpload = useRef<AbortController | null>(null);
   const generation = useRef(0);
+
+  useLayoutEffect(() => {
+    setToolbarTarget(
+      toolbarTargetId ? document.getElementById(toolbarTargetId) : null,
+    );
+  }, [toolbarTargetId]);
 
   useEffect(
     () => () => {
@@ -343,6 +356,61 @@ export function TerminalWithUpload({
     });
   };
 
+  const toolbar = (
+    <div className="wterm-upload-toolbar">
+      <button
+        type="button"
+        disabled={!attachment || transfer.kind === "uploading"}
+        onClick={() => inputRef.current?.click()}
+        className="rounded border px-2 py-1 text-xs"
+      >
+        Upload file
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        aria-label="Choose file to upload"
+        className="sr-only"
+        onChange={onFileChange}
+      />
+      <span
+        className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
+        role="status"
+      >
+        {message}
+      </span>
+      <div
+        className="flex shrink-0 items-center gap-1"
+        aria-label="Terminal font size controls"
+      >
+        <button
+          type="button"
+          aria-label="Decrease terminal font size"
+          disabled={fontSize <= MIN_TERMINAL_FONT_SIZE}
+          onClick={() => changeFontSize(-1)}
+          className="rounded border px-2 py-1 text-xs"
+        >
+          −
+        </button>
+        <span
+          aria-label="Terminal font size"
+          className="w-10 text-center text-xs tabular-nums"
+        >
+          {fontSize}px
+        </span>
+        <button
+          type="button"
+          aria-label="Increase terminal font size"
+          disabled={fontSize >= MAX_TERMINAL_FONT_SIZE}
+          onClick={() => changeFontSize(1)}
+          className="rounded border px-2 py-1 text-xs"
+        >
+          +
+        </button>
+      </div>
+    </div>
+  );
+
   return (
     <div
       className="wterm-terminal-with-upload"
@@ -350,58 +418,7 @@ export function TerminalWithUpload({
       onDrop={onDrop}
       onPasteCapture={onPasteCapture}
     >
-      <div className="wterm-upload-toolbar">
-        <button
-          type="button"
-          disabled={!attachment || transfer.kind === "uploading"}
-          onClick={() => inputRef.current?.click()}
-          className="rounded border px-2 py-1 text-xs"
-        >
-          Upload file
-        </button>
-        <input
-          ref={inputRef}
-          type="file"
-          aria-label="Choose file to upload"
-          className="sr-only"
-          onChange={onFileChange}
-        />
-        <span
-          className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
-          role="status"
-        >
-          {message}
-        </span>
-        <div
-          className="flex shrink-0 items-center gap-1"
-          aria-label="Terminal font size controls"
-        >
-          <button
-            type="button"
-            aria-label="Decrease terminal font size"
-            disabled={fontSize <= MIN_TERMINAL_FONT_SIZE}
-            onClick={() => changeFontSize(-1)}
-            className="rounded border px-2 py-1 text-xs"
-          >
-            −
-          </button>
-          <span
-            aria-label="Terminal font size"
-            className="w-10 text-center text-xs tabular-nums"
-          >
-            {fontSize}px
-          </span>
-          <button
-            type="button"
-            aria-label="Increase terminal font size"
-            disabled={fontSize >= MAX_TERMINAL_FONT_SIZE}
-            onClick={() => changeFontSize(1)}
-            className="rounded border px-2 py-1 text-xs"
-          >
-            +
-          </button>
-        </div>
-      </div>
+      {toolbarTarget ? createPortal(toolbar, toolbarTarget) : toolbar}
       <div className="wterm-upload-terminal">
         <TerminalRenderer
           terminalId={terminalId}
