@@ -1,4 +1,11 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import {
+	lazy,
+	Suspense,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from "react";
 import {
 	definePluginApp,
 	useBbContext,
@@ -7,6 +14,7 @@ import {
 } from "@bb/plugin-sdk/app";
 import * as BbApp from "@bb/plugin-sdk/app";
 import type { wtermRpcContract } from "./server";
+import { HERDR_RAM_MASK_URL } from "./herdr-icon.js";
 import { evaluateTerminalPresence } from "./terminal-open-policy.js";
 import {
 	beginWtermOpen,
@@ -45,6 +53,28 @@ function HerdrHeaderContent() {
 	return (
 		<div id="wterm-herdr-toolbar-slot" className="wterm-herdr-toolbar-slot" />
 	);
+}
+
+function HerdrSidebarAccessory() {
+	const markerRef = useRef<HTMLSpanElement>(null);
+	useLayoutEffect(() => {
+		const icon = markerRef.current
+			?.closest<HTMLElement>(".bb-sidebar-hover-actions-row")
+			?.querySelector<SVGElement>("button svg");
+		if (!icon) return;
+		const previousStyle = icon.getAttribute("style");
+		icon.style.backgroundColor = "currentColor";
+		icon.style.mask = `${HERDR_RAM_MASK_URL} center / contain no-repeat`;
+		icon.style.setProperty(
+			"-webkit-mask",
+			`${HERDR_RAM_MASK_URL} center / contain no-repeat`,
+		);
+		return () => {
+			if (previousStyle === null) icon.removeAttribute("style");
+			else icon.setAttribute("style", previousStyle);
+		};
+	}, []);
+	return <span ref={markerRef} className="hidden" aria-hidden="true" />;
 }
 
 function HerdrPage() {
@@ -513,6 +543,7 @@ export default definePluginApp((app) => {
 		path: "herdr",
 		component: HerdrPage,
 		headerContent: HerdrHeaderContent,
+		experimental_sidebarAccessory: HerdrSidebarAccessory,
 	});
 	app.slots.navPanel({
 		id: "wterm",
