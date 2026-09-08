@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRpc, type PluginNavPanelProps } from "@bb/plugin-sdk/app";
 import type { wtermRpcContract } from "./server";
 import { useLegacyTerminalAttachment } from "./terminal-attachment.js";
@@ -7,9 +7,7 @@ import type { PickerSession } from "./picker-state.js";
 import {
 	activeWtermTabId,
 	createWtermTabPreference,
-	MAX_WTERM_TAB_NAME_LENGTH,
 	nextWtermTabIdAfterClose,
-	normalizeWtermTabName,
 	parseWtermTabPreference,
 	reorderWtermTabs,
 	restoreWtermTabs,
@@ -107,15 +105,7 @@ export function WtermPanel(_props: PluginNavPanelProps) {
 	>({ kind: "loading" });
 	const [opening, setOpening] = useState(false);
 	const [closingId, setClosingId] = useState<string | null>(null);
-	const [confirmingCloseId, setConfirmingCloseId] = useState<string | null>(
-		null,
-	);
-	const [menuId, setMenuId] = useState<string | null>(null);
-	const [editingId, setEditingId] = useState<string | null>(null);
-	const [draftName, setDraftName] = useState("");
 	const [actionError, setActionError] = useState<string | null>(null);
-	const tabRefs = useRef(new Map<string, HTMLButtonElement>());
-	const focusAfterEditId = useRef<string | null>(null);
 
 	useEffect(() => {
 		void preloadTerminalPanel().catch(() => undefined);
@@ -170,12 +160,6 @@ export function WtermPanel(_props: PluginNavPanelProps) {
 		}
 	}, [state]);
 
-	useEffect(() => {
-		if (editingId !== null || !focusAfterEditId.current) return;
-		tabRefs.current.get(focusAfterEditId.current)?.focus();
-		focusAfterEditId.current = null;
-	}, [editingId]);
-
 	if (state.kind === "error") {
 		return (
 			<PanelError
@@ -216,42 +200,6 @@ export function WtermPanel(_props: PluginNavPanelProps) {
 			setOpening(false);
 		}
 	};
-	const renameTerminal = (terminalId: string) => {
-		const name = normalizeWtermTabName(draftName);
-		if (!name) {
-			setActionError(
-				`Terminal names must be 1–${MAX_WTERM_TAB_NAME_LENGTH} characters.`,
-			);
-			return;
-		}
-		setActionError(null);
-		setState((current) =>
-			current.kind === "ready"
-				? {
-						...current,
-						sessions: current.sessions.map((session) =>
-							session.id === terminalId ? { ...session, title: name } : session,
-						),
-					}
-				: current,
-		);
-		focusAfterEditId.current = terminalId;
-		setEditingId(null);
-	};
-	const moveTerminal = (terminalId: string, offset: -1 | 1) => {
-		setActionError(null);
-		setState((current) => {
-			if (current.kind !== "ready") return current;
-			const index = current.sessions.findIndex(({ id }) => id === terminalId);
-			const target = current.sessions[index + offset];
-			return target
-				? {
-						...current,
-						sessions: [...reorderWtermTabs(current.sessions, terminalId, target.id)],
-					}
-				: current;
-		});
-	};
 	const dropTerminal = (movedId: string, targetId: string) => {
 		setActionError(null);
 		setState((current) =>
@@ -285,8 +233,6 @@ export function WtermPanel(_props: PluginNavPanelProps) {
 			setActionError(errorMessage(error));
 		} finally {
 			setClosingId(null);
-			setConfirmingCloseId(null);
-			setMenuId(null);
 		}
 	};
 
@@ -308,7 +254,7 @@ export function WtermPanel(_props: PluginNavPanelProps) {
 									? "-mb-px border-border border-b-background bg-background"
 									: "border-transparent border-r-border/60 text-muted-foreground hover:bg-muted/60"
 							}`}
-							draggable={editingId !== session.id}
+							draggable
 							onDragStart={(event) => {
 								event.dataTransfer.effectAllowed = "move";
 								event.dataTransfer.setData("text/plain", session.id);
@@ -319,124 +265,27 @@ export function WtermPanel(_props: PluginNavPanelProps) {
 								dropTerminal(event.dataTransfer.getData("text/plain"), session.id);
 							}}
 						>
-							{editingId === session.id ? (
-								<input
-									id={`wterm-tab-${session.id}`}
-									autoFocus
-									aria-label={`Rename ${name}`}
-									className="w-32 bg-background px-2 py-1 text-xs"
-									maxLength={MAX_WTERM_TAB_NAME_LENGTH}
-									value={draftName}
-									onChange={(event) => setDraftName(event.currentTarget.value)}
-									onKeyDown={(event) => {
-										if (event.key === "Enter") renameTerminal(session.id);
-										if (event.key === "Escape") {
-											focusAfterEditId.current = session.id;
-											setEditingId(null);
-											setActionError(null);
-										}
-									}}
-								/>
-							) : (
-								<button
-									ref={(element) => {
-										if (element) tabRefs.current.set(session.id, element);
-										else tabRefs.current.delete(session.id);
-									}}
-									id={`wterm-tab-${session.id}`}
-									type="button"
-									role="tab"
-									aria-controls="wterm-panel"
-									aria-selected={session.id === state.activeId}
-									className="max-w-48 truncate px-2.5 py-2 text-xs font-medium transition-colors aria-selected:text-foreground"
-									onClick={() => select(session.id)}
-								>
-									{name}
-								</button>
-							)}
-							<div className="relative">
-								<button
-									type="button"
-									aria-label={`${name} options`}
-									aria-haspopup="menu"
-									aria-expanded={menuId === session.id}
-									className="px-2 py-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
-									onClick={() =>
-										setMenuId((current) => (current === session.id ? null : session.id))
-									}
-								>
-									⋮
-								</button>
-								{menuId === session.id ? (
-									<div
-										role="menu"
-										className="absolute left-0 z-10 flex min-w-28 flex-col rounded border bg-background p-1 shadow"
-									>
-										<button
-											type="button"
-											role="menuitem"
-											className="px-2 py-1 text-left text-xs"
-											onClick={() => {
-												setActionError(null);
-												setDraftName(name);
-												setEditingId(session.id);
-												setMenuId(null);
-											}}
-										>
-											Rename
-										</button>
-										<button
-											type="button"
-											role="menuitem"
-											className="px-2 py-1 text-left text-xs"
-											disabled={index === 0}
-											onClick={() => moveTerminal(session.id, -1)}
-										>
-											Move left
-										</button>
-										<button
-											type="button"
-											role="menuitem"
-											className="px-2 py-1 text-left text-xs"
-											disabled={index === state.sessions.length - 1}
-											onClick={() => moveTerminal(session.id, 1)}
-										>
-											Move right
-										</button>
-										{confirmingCloseId === session.id ? (
-											<>
-												<button
-													type="button"
-													role="menuitem"
-													className="px-2 py-1 text-left text-xs text-destructive"
-													disabled={closingId !== null}
-													onClick={() => void closeTerminal(session.id)}
-												>
-													Confirm close
-												</button>
-												<button
-													type="button"
-													role="menuitem"
-													className="px-2 py-1 text-left text-xs"
-													onClick={() => setConfirmingCloseId(null)}
-												>
-													Cancel
-												</button>
-											</>
-										) : (
-											<button
-												type="button"
-												role="menuitem"
-												className="px-2 py-1 text-left text-xs text-destructive"
-												disabled={closingId !== null}
-												onClick={() => setConfirmingCloseId(session.id)}
-											>
-												Close
-											</button>
-										)}
-									</div>
-								) : null}
-							</div>
+							<button
+								id={`wterm-tab-${session.id}`}
+								type="button"
+								role="tab"
+								aria-controls="wterm-panel"
+								aria-selected={session.id === state.activeId}
+								className="max-w-48 truncate px-2.5 py-2 text-xs font-medium transition-colors aria-selected:text-foreground"
+								onClick={() => select(session.id)}
+							>
+								{name}
+							</button>
+							<button
+								type="button"
+								aria-label={`Close ${name}`}
+								title={`Close ${name}`}
+								className="px-2 py-2 text-sm leading-none text-muted-foreground transition-colors hover:text-foreground"
+								disabled={closingId !== null}
+								onClick={() => void closeTerminal(session.id)}
+							>
+								×
+							</button>
 						</div>
 					);
 				})}
