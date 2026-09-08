@@ -520,6 +520,7 @@ export default definePluginApp((app) => {
 		icon: "Terminal",
 		path: "wterm",
 		component: WtermPage,
+		headerContent: HerdrHeaderContent,
 	});
 	app.slots.threadPanelAction({
 		id: PANEL_ACTION_ID,
