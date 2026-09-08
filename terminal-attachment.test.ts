@@ -155,6 +155,82 @@ describe("LegacyTerminalAttachment", () => {
     ]);
   });
 
+  it("keeps replay accumulation work linear before the final flush", () => {
+    const attachment = new LegacyTerminalAttachment("terminal-1");
+    const received: number[] = [];
+    attachment.subscribe((chunk) => received.push(chunk.seq));
+    attachment.connect();
+    const socket = FakeWebSocket.instances[0];
+    if (!socket) throw new Error("expected replay WebSocket");
+    const size = 256;
+
+    socket.receive({ type: "attached", nextSeq: size });
+    let predicateCalls = 0;
+    const originalSome = Array.prototype.some;
+    const countedSome = function <T>(
+      this: T[],
+      predicate: (value: T, index: number, array: T[]) => unknown,
+      thisArg?: unknown,
+    ): boolean {
+      return originalSome.call(this, (value, index, array) => {
+        predicateCalls += 1;
+        return predicate.call(thisArg, value, index, array);
+      });
+    };
+    const someSpy = vi
+      .spyOn(Array.prototype, "some")
+      .mockImplementation(countedSome as typeof Array.prototype.some);
+    try {
+      for (let seq = size - 2; seq >= 0; seq -= 1) {
+        socket.receive(output(seq, String(seq)));
+      }
+      socket.receive(output(size - 1, String(size - 1)));
+    } finally {
+      someSpy.mockRestore();
+    }
+
+    expect(predicateCalls).toBeLessThanOrEqual(size * 4);
+    expect(received).toEqual(Array.from({ length: size }, (_, seq) => seq));
+  });
+
+  it("does not require truncated replay to start at sequence zero", () => {
+    const attachment = new LegacyTerminalAttachment("terminal-1");
+    const received: number[] = [];
+    attachment.subscribe((chunk) => received.push(chunk.seq));
+    attachment.connect();
+    const socket = FakeWebSocket.instances[0];
+    if (!socket) throw new Error("expected replay WebSocket");
+
+    socket.receive({ type: "attached", nextSeq: 7 });
+    socket.receive(output(5, "replay-5"));
+    socket.receive(output(6, "replay-6"));
+    socket.receive(output(7, "live-7"));
+
+    expect(received).toEqual([5, 6, 7]);
+  });
+
+  it("stops replay delivery when a listener detaches", () => {
+    const attachment = new LegacyTerminalAttachment("terminal-1");
+    const received: number[] = [];
+    attachment.subscribe((chunk) => {
+      received.push(chunk.seq);
+      attachment.detach();
+    });
+    attachment.connect();
+    const socket = FakeWebSocket.instances[0];
+    if (!socket) throw new Error("expected replay WebSocket");
+
+    socket.receive({ type: "attached", nextSeq: 3 });
+    socket.receive(output(0, "replay-0"));
+    socket.receive(output(1, "replay-1"));
+    socket.receive(output(2, "replay-2"));
+
+    const lateSubscriber = vi.fn();
+    attachment.subscribe(lateSubscriber);
+    expect(received).toEqual([0]);
+    expect(lateSubscriber).not.toHaveBeenCalled();
+  });
+
   it("buffers output until a renderer subscribes", () => {
     const attachment = new LegacyTerminalAttachment("terminal-1");
     attachment.connect();

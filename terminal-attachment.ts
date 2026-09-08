@@ -49,7 +49,7 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
   private readonly pendingInputs: string[] = [];
   private readonly pendingLive = new Map<number, OutputChunk>();
   private pendingEchoCount = 0;
-  private pendingReplay: OutputChunk[] = [];
+  private readonly pendingReplay = new Map<number, OutputChunk>();
   private pendingResize: string | null = null;
   private socket: WebSocket | null = null;
 
@@ -66,7 +66,7 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
     this.attachedNextSeq = null;
     this.pendingBeforeAttach.clear();
     this.pendingLive.clear();
-    this.pendingReplay = [];
+    this.pendingReplay.clear();
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const endpoint = `${protocol}//${window.location.host}/ws/terminals/${encodeURIComponent(this.terminalId)}`;
     const socket = new WebSocket(endpoint);
@@ -138,7 +138,7 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
     this.pendingInputs.length = 0;
     this.pendingLive.clear();
     this.pendingEchoCount = 0;
-    this.pendingReplay = [];
+    this.pendingReplay.clear();
     this.pendingResize = null;
   }
 
@@ -176,15 +176,9 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
   }
 
   private insertReplay(chunk: OutputChunk): void {
-    if (this.pendingReplay.some((pending) => pending.seq === chunk.seq)) return;
-    let index = 0;
-    while (
-      index < this.pendingReplay.length &&
-      this.pendingReplay[index]!.seq < chunk.seq
-    ) {
-      index += 1;
+    if (!this.pendingReplay.has(chunk.seq)) {
+      this.pendingReplay.set(chunk.seq, chunk);
     }
-    this.pendingReplay.splice(index, 0, chunk);
   }
 
   private flushWhenReplayComplete(): void {
@@ -192,12 +186,12 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
     const replayCaughtUp =
       this.attachedNextSeq === 0 ||
       this.lastDeliveredSeq >= this.attachedNextSeq - 1 ||
-      this.pendingReplay.some(
-        (chunk) => chunk.seq === this.attachedNextSeq! - 1,
-      );
+      this.pendingReplay.has(this.attachedNextSeq - 1);
     if (!replayCaughtUp) return;
-    const replay = this.pendingReplay;
-    this.pendingReplay = [];
+    const replay = [...this.pendingReplay.values()].sort(
+      (left, right) => left.seq - right.seq,
+    );
+    this.pendingReplay.clear();
     for (const chunk of replay) this.deliver(chunk);
     const live = [...this.pendingLive.values()].sort(
       (left, right) => left.seq - right.seq,
@@ -211,7 +205,7 @@ export class LegacyTerminalAttachment implements TerminalAttachment {
   }
 
   private deliver(chunk: OutputChunk): void {
-    if (chunk.seq <= this.lastDeliveredSeq) return;
+    if (this.detached || chunk.seq <= this.lastDeliveredSeq) return;
     this.lastDeliveredSeq = chunk.seq;
     const decoded = { seq: chunk.seq, bytes: decodeBase64(chunk.dataBase64) };
     this.deliveredCount += 1;
