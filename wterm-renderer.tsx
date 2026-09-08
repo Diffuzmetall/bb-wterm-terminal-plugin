@@ -264,6 +264,14 @@ export function disposeGhosttyCore(
 }
 
 const pluginToken = getPluginToken;
+const GHOSTTY_CORE_PRELOAD_TTL_MS = 10_000;
+
+type PreloadedGhosttyCore = {
+  promise: Promise<GhosttyCore>;
+  disposeTimer: ReturnType<typeof setTimeout> | null;
+};
+
+let preloadedGhosttyCore: PreloadedGhosttyCore | null = null;
 
 const ghosttyWasmObjectUrl = createRetryablePromiseCache(async () => {
   const response = await fetch(GHOSTTY_WASM_URL, {
@@ -278,6 +286,51 @@ const ghosttyWasmObjectUrl = createRetryablePromiseCache(async () => {
   );
 });
 
+async function createDefaultGhosttyCore(): Promise<GhosttyCore> {
+  return GhosttyCore.load(ghosttyCoreOptions(await ghosttyWasmObjectUrl()));
+}
+
+function ghosttyCorePreloadDisabled(): boolean {
+  if (!wtermPerformance.enabled || typeof window === "undefined") return false;
+  return (
+    new URLSearchParams(window.location.search).get("wterm_preload") === "0"
+  );
+}
+
+export function preloadGhosttyCore(): Promise<void> {
+  if (ghosttyCorePreloadDisabled()) return Promise.resolve();
+  if (!preloadedGhosttyCore) {
+    const slot: PreloadedGhosttyCore = {
+      promise: createDefaultGhosttyCore(),
+      disposeTimer: null,
+    };
+    preloadedGhosttyCore = slot;
+    void slot.promise.then(
+      (core) => {
+        if (preloadedGhosttyCore !== slot) return;
+        markWtermPerformance("preload-ready");
+        slot.disposeTimer = setTimeout(() => {
+          if (preloadedGhosttyCore !== slot) return;
+          preloadedGhosttyCore = null;
+          disposeGhosttyCore(core);
+        }, GHOSTTY_CORE_PRELOAD_TTL_MS);
+      },
+      () => {
+        if (preloadedGhosttyCore === slot) preloadedGhosttyCore = null;
+      },
+    );
+  }
+  return preloadedGhosttyCore.promise.then(() => undefined);
+}
+
+async function takeDefaultGhosttyCore(): Promise<GhosttyCore> {
+  const slot = preloadedGhosttyCore;
+  if (!slot) return createDefaultGhosttyCore();
+  preloadedGhosttyCore = null;
+  if (slot.disposeTimer !== null) clearTimeout(slot.disposeTimer);
+  return slot.promise;
+}
+
 export async function loadGhosttyCore(
   wasmUrl = GHOSTTY_WASM_URL,
   onClipboardRequest: (text: string) => void = () => {},
@@ -289,13 +342,14 @@ export async function loadGhosttyCore(
     );
   }
   return supportAnyEventMouseMode(
-    await GhosttyCore.load(ghosttyCoreOptions(await ghosttyWasmObjectUrl())),
+    await takeDefaultGhosttyCore(),
     onClipboardRequest,
   );
 }
 
 export async function preloadTerminalAssets(): Promise<void> {
-  await Promise.all([ghosttyWasmObjectUrl(), loadNerdFont()]);
+  if (ghosttyCorePreloadDisabled()) return;
+  await Promise.all([preloadGhosttyCore(), loadNerdFont()]);
 }
 
 export async function loadNerdFont(

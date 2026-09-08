@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { GhosttyCore } from "@wterm/ghostty";
 import { describe, expect, it, vi } from "vitest";
 import {
   clearTerminalSelection,
@@ -8,6 +9,8 @@ import {
   disposeGhosttyCore,
   encodeAnyEventMouseMove,
   ghosttyCoreOptions,
+  loadGhosttyCore,
+  preloadGhosttyCore,
   supportAnyEventMouseMode,
 } from "./wterm-renderer";
 
@@ -119,7 +122,9 @@ describe("SDK typecheck regressions", () => {
       new URL("./wterm-renderer.tsx", import.meta.url),
       "utf8",
     );
-    expect(source).toContain("if (!end || !selectionMoved(drag.start, end)) return;");
+    expect(source).toContain(
+      "if (!end || !selectionMoved(drag.start, end)) return;",
+    );
   });
 
   it("keeps terminal-link failures on the imported toast path", () => {
@@ -128,7 +133,9 @@ describe("SDK typecheck regressions", () => {
       "utf8",
     );
     expect(source).toContain('import { toast } from "sonner";');
-    expect(source).toContain("toast.error(\"BB could not open this terminal file.\");");
+    expect(source).toContain(
+      'toast.error("BB could not open this terminal file.");',
+    );
   });
 });
 
@@ -169,13 +176,137 @@ describe("terminal hyperlink activation", () => {
       new URL("./wterm-renderer.tsx", import.meta.url),
       "utf8",
     );
-    expect(source).toContain('onClick={handleLinkClick}');
+    expect(source).toContain("onClick={handleLinkClick}");
     expect(source).toContain("terminalLinkAction(link.href)");
     expect(source).toContain("onLinkClick(link.href)");
   });
 });
 
 describe("Ghostty graphics configuration and lifecycle", () => {
+  function stubDefaultGhosttyAssets(): () => void {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ token: "fixture" }), {
+            headers: { "content-type": "application/json" },
+            status: 200,
+          }),
+        )
+        .mockResolvedValueOnce(new Response(new Uint8Array([0, 97, 115, 109]))),
+    );
+    const createObjectUrl = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:wterm-test");
+    return () => {
+      createObjectUrl.mockRestore();
+      vi.unstubAllGlobals();
+    };
+  }
+
+  it("hands the preloaded core to the next renderer without loading twice", async () => {
+    vi.useFakeTimers();
+    const core = {
+      dispose: vi.fn(),
+      init: vi.fn(),
+      mouseTracking: vi.fn(() => 0),
+      resize: vi.fn(),
+      writeRaw: vi.fn(),
+      writeString: vi.fn(),
+    } as unknown as GhosttyCore;
+    const load = vi.spyOn(GhosttyCore, "load").mockResolvedValue(core);
+    const restoreAssets = stubDefaultGhosttyAssets();
+
+    try {
+      await preloadGhosttyCore();
+      expect(await loadGhosttyCore()).toBe(core);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(core.dispose).not.toHaveBeenCalled();
+      expect(load).toHaveBeenCalledOnce();
+    } finally {
+      restoreAssets();
+      load.mockRestore();
+      vi.useRealTimers();
+      disposeGhosttyCore(core);
+    }
+  });
+
+  it("hands off a preload that is still pending", async () => {
+    const core = {
+      dispose: vi.fn(),
+      init: vi.fn(),
+      mouseTracking: vi.fn(() => 0),
+      resize: vi.fn(),
+      writeRaw: vi.fn(),
+      writeString: vi.fn(),
+    } as unknown as GhosttyCore;
+    let resolveCore!: (core: GhosttyCore) => void;
+    const load = vi.spyOn(GhosttyCore, "load").mockReturnValue(
+      new Promise<GhosttyCore>((resolve) => {
+        resolveCore = resolve;
+      }),
+    );
+    const restoreAssets = stubDefaultGhosttyAssets();
+
+    try {
+      const preload = preloadGhosttyCore();
+      const rendererLoad = loadGhosttyCore();
+      await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+      resolveCore(core);
+      await expect(rendererLoad).resolves.toBe(core);
+      await expect(preload).resolves.toBeUndefined();
+      expect(load).toHaveBeenCalledOnce();
+    } finally {
+      restoreAssets();
+      load.mockRestore();
+      disposeGhosttyCore(core);
+    }
+  });
+
+  it("disposes a preloaded core that no renderer consumes", async () => {
+    vi.useFakeTimers();
+    const core = {
+      dispose: vi.fn(),
+      init: vi.fn(),
+      mouseTracking: vi.fn(() => 0),
+      resize: vi.fn(),
+      writeRaw: vi.fn(),
+      writeString: vi.fn(),
+    } as unknown as GhosttyCore;
+    const load = vi.spyOn(GhosttyCore, "load").mockResolvedValue(core);
+    const restoreAssets = stubDefaultGhosttyAssets();
+
+    try {
+      await preloadGhosttyCore();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(core.dispose).toHaveBeenCalledOnce();
+      expect(load).toHaveBeenCalledOnce();
+    } finally {
+      restoreAssets();
+      load.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts standalone core preload before opening a new PTY", () => {
+    const source = readFileSync(
+      new URL("./herdr-panel.tsx", import.meta.url),
+      "utf8",
+    );
+    const labelIndex = source.indexOf(
+      '{opening ? "Opening…" : "New terminal"}',
+    );
+    const handler = source.slice(
+      source.lastIndexOf("<button", labelIndex),
+      source.indexOf("</button>", labelIndex),
+    );
+    expect(source).toContain("preloadTerminalPanel");
+    expect(handler.indexOf("preloadTerminalPanel()")).toBeLessThan(
+      handler.indexOf("createTerminal()"),
+    );
+  });
+
   it("keeps Kitty storage bounded and uses the terminal dark palette", () => {
     expect(ghosttyCoreOptions("/ghostty-vt.wasm")).toEqual({
       wasmPath: "/ghostty-vt.wasm",
@@ -199,7 +330,9 @@ describe("Ghostty graphics configuration and lifecycle", () => {
       "utf8",
     );
     expect(source).toContain("autoResize");
-    expect(source).toContain("imageStorageLimit: GHOSTTY_IMAGE_STORAGE_LIMIT_BYTES");
+    expect(source).toContain(
+      "imageStorageLimit: GHOSTTY_IMAGE_STORAGE_LIMIT_BYTES",
+    );
     expect(source).not.toContain("maxImageWidth={window");
     expect(source).not.toContain("maxImageHeight={window");
   });
@@ -266,9 +399,15 @@ describe("DEC 1003 any-event mouse motion", () => {
       shiftKey: false,
     };
     expect(encodeAnyEventMouseMove(input)).toBeNull();
-    expect(encodeAnyEventMouseMove({ ...input, previous: null, buttons: 1 })).toBeNull();
-    expect(encodeAnyEventMouseMove({ ...input, previous: null, shiftKey: true })).toBeNull();
-    expect(encodeAnyEventMouseMove({ ...input, previous: null, active: false })).toBeNull();
+    expect(
+      encodeAnyEventMouseMove({ ...input, previous: null, buttons: 1 }),
+    ).toBeNull();
+    expect(
+      encodeAnyEventMouseMove({ ...input, previous: null, shiftKey: true }),
+    ).toBeNull();
+    expect(
+      encodeAnyEventMouseMove({ ...input, previous: null, active: false }),
+    ).toBeNull();
   });
 });
 
@@ -306,12 +445,18 @@ describe("OSC 52 from TUI output", () => {
     });
     const requestsA: string[] = [];
     const requestsB: string[] = [];
-    const wrappedA = supportAnyEventMouseMode(coreFixture() as never, (text) => {
-      requestsA.push(text);
-    });
-    const wrappedB = supportAnyEventMouseMode(coreFixture() as never, (text) => {
-      requestsB.push(text);
-    });
+    const wrappedA = supportAnyEventMouseMode(
+      coreFixture() as never,
+      (text) => {
+        requestsA.push(text);
+      },
+    );
+    const wrappedB = supportAnyEventMouseMode(
+      coreFixture() as never,
+      (text) => {
+        requestsB.push(text);
+      },
+    );
 
     wrappedA.writeString(`\x1b]52;c;${btoa("panel-a")}\x07`);
     wrappedB.writeString(`\x1b]52;c;${btoa("panel-b")}\x07`);

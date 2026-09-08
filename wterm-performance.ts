@@ -1,5 +1,6 @@
 export const WTERM_PERFORMANCE_MARKS = [
   "effect-start",
+  "preload-ready",
   "core-ready",
   "ws-open",
   "attached",

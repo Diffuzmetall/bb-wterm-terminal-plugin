@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRpc, type PluginNavPanelProps } from "@bb/plugin-sdk/app";
 import type { wtermRpcContract } from "./server";
 import { useLegacyTerminalAttachment } from "./terminal-attachment.js";
-import { TerminalWithUpload } from "./terminal-panel.js";
+import { preloadTerminalPanel, TerminalWithUpload } from "./terminal-panel.js";
 import type { PickerSession } from "./picker-state.js";
 import {
 	activeWtermTabId,
@@ -111,6 +111,10 @@ export function WtermPanel(_props: PluginNavPanelProps) {
 	const [actionError, setActionError] = useState<string | null>(null);
 	const tabRefs = useRef(new Map<string, HTMLButtonElement>());
 	const focusAfterEditId = useRef<string | null>(null);
+
+	useEffect(() => {
+		void preloadTerminalPanel().catch(() => undefined);
+	}, []);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -430,7 +434,10 @@ export function WtermPanel(_props: PluginNavPanelProps) {
 					type="button"
 					className="rounded border px-2 py-1 text-xs"
 					disabled={opening}
-					onClick={() => void createTerminal()}
+					onClick={() => {
+						void preloadTerminalPanel().catch(() => undefined);
+						void createTerminal();
+					}}
 				>
 					{opening ? "Opening…" : "New terminal"}
 				</button>
