@@ -18,7 +18,9 @@
 }
 
 .wterm-herdr-toolbar-slot .wterm-upload-toolbar {
-  width: 100%;
+  position: absolute;
+  inset: 0 2.25rem 0 5rem;
+  width: auto;
   padding: 0;
   border-bottom: 0;
   background: transparent;
