@@ -363,7 +363,7 @@ export function WtermPanel(_props: PluginNavPanelProps) {
 				className="min-h-0 flex-1"
 			>
 				{active && (active.status === "running" || active.status === "starting") ? (
-					<NavTerminal session={active} toolbarTargetId="wterm-herdr-toolbar-slot" />
+					<NavTerminal session={active} />
 				) : (
 					<div className="flex h-full items-center justify-center p-4 text-sm text-muted-foreground">
 						{active ? `Terminal is ${active.status}.` : "No Wterm terminals."}
