@@ -897,6 +897,115 @@ describe("Wterm server boundaries", () => {
     expect(write).not.toHaveBeenCalled();
   });
 
+  it("authorizes a thread upload with a constant number of backend calls", async () => {
+    const linked = Array.from({ length: 100 }, (_, index) => `term-${index}`);
+    const register = vi.fn();
+    const route = vi.fn();
+    const write = vi.fn().mockResolvedValue({
+      outcome: "written",
+      sha256: createHash("sha256")
+        .update(new Uint8Array([1, 2, 3]))
+        .digest("hex"),
+      sizeBytes: 3,
+    });
+    const get = vi.fn(async ({ terminalId }: { terminalId: string }) => {
+      if (!linked.includes(terminalId)) throw new Error("terminal not found");
+      return {
+        id: terminalId,
+        threadId: "thread-1",
+        environmentId: null,
+        hostId: "remote-host",
+        title: "Shell",
+        initialCwd: "/workspace",
+        cols: 80,
+        rows: 24,
+        status: "running",
+      };
+    });
+    const list = vi.fn().mockResolvedValue({ sessions: [] });
+    const bb = {
+      http: { route },
+      rpc: { register },
+      storage: {
+        kv: {
+          get: vi.fn().mockResolvedValue(linked),
+          set: vi.fn().mockResolvedValue(undefined),
+        },
+      },
+      sdk: { files: { write }, terminals: { get, list } },
+    } as never;
+    plugin(bb);
+    const upload = route.mock.calls.find(
+      ([method, path]) => method === "POST" && path === "/upload",
+    )?.[2] as (context: unknown) => Promise<Response>;
+
+    const response = await upload(uploadContext({ terminalId: "term-87" }));
+
+    expect(response.status).toBe(201);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get.mock.calls[0]?.[0]).toEqual({ terminalId: "term-87" });
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not wait for other linked terminals when authorizing an upload", async () => {
+    const linked = Array.from({ length: 100 }, (_, index) => `term-${index}`);
+    let releaseSlow: (() => void) | undefined;
+    const slow = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    const register = vi.fn();
+    const route = vi.fn();
+    const write = vi.fn().mockResolvedValue({
+      outcome: "written",
+      sha256: createHash("sha256")
+        .update(new Uint8Array([1, 2, 3]))
+        .digest("hex"),
+      sizeBytes: 3,
+    });
+    const requested = {
+      id: "term-87",
+      threadId: "thread-1",
+      environmentId: null,
+      hostId: "remote-host",
+      title: "Shell",
+      initialCwd: "/workspace",
+      cols: 80,
+      rows: 24,
+      status: "running",
+    };
+    const get = vi.fn(async ({ terminalId }: { terminalId: string }) => {
+      if (terminalId !== "term-87") {
+        await slow;
+        throw new Error("terminal not found");
+      }
+      return requested;
+    });
+    const bb = {
+      http: { route },
+      rpc: { register },
+      storage: {
+        kv: {
+          get: vi.fn().mockResolvedValue(linked),
+          set: vi.fn().mockResolvedValue(undefined),
+        },
+      },
+      sdk: {
+        files: { write },
+        terminals: { get, list: vi.fn().mockResolvedValue({ sessions: [] }) },
+      },
+    } as never;
+    plugin(bb);
+    const upload = route.mock.calls.find(
+      ([method, path]) => method === "POST" && path === "/upload",
+    )?.[2] as (context: unknown) => Promise<Response>;
+
+    const response = await upload(uploadContext({ terminalId: "term-87" }));
+
+    expect(response.status).toBe(201);
+    expect(get).toHaveBeenCalledTimes(1);
+    releaseSlow?.();
+  });
+
   it("does not drop a linked id from a rejected lookup", () => {
     expect(
       nextLinkedTerminalIds(

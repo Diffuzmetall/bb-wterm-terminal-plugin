@@ -411,6 +411,7 @@ async function closeLinkedTerminalIfTabMissing(
 	});
 }
 
+// ubs:ignore — merges SDK session lists into a Map; no request-derived object keys.
 async function sessionsForThread(bb: BbPluginApi, threadId: string) {
 	const [legacy, linked] = await Promise.all([
 		bb.sdk.terminals.list({ scope: legacyScope(threadId) }),
@@ -449,13 +450,26 @@ async function resolveUploadTerminal(
 	threadId: string,
 ): Promise<Session> {
 	if (threadId) {
-		const terminal = (await sessionsForThread(bb, threadId)).find(
-			(item) => item.id === terminalId,
-		);
-		if (!terminal) {
-			throw new UploadError(404, "terminal is not in the requested thread");
+		// Membership is a constant-cost check: the thread's own terminal list plus
+		// its linked records. Loading every linked session just to authorize one
+		// upload made large threads pay one backend call per linked terminal.
+		const [legacy, records] = await Promise.all([
+			bb.sdk.terminals.list({ scope: legacyScope(threadId) }),
+			linkedTerminalRecords(bb, threadId),
+		]);
+		const isLinked = records.some((record) => record.id === terminalId);
+		const legacySession = legacy.sessions.find((item) => item.id === terminalId);
+		if (isLinked) {
+			try {
+				const linked = await bb.sdk.terminals.get({ terminalId });
+				if (linked?.id === terminalId) return linked;
+			} catch {
+				// A rejected linked lookup falls back to the legacy entry, exactly as
+				// the merged session list did.
+			}
 		}
-		return terminal;
+		if (legacySession) return legacySession;
+		throw new UploadError(404, "terminal is not in the requested thread");
 	}
 	try {
 		const session = await bb.sdk.terminals.get({ terminalId });

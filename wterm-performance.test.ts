@@ -1,12 +1,50 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   WtermPerformance,
+  WtermStreamDigest,
   nearestRankStats,
   summarizePerformance,
 } from "./wterm-performance";
 
 afterEach(() => {
   performance.clearMarks();
+});
+
+describe("WtermStreamDigest", () => {
+  const digestOf = (chunks: readonly string[]): number => {
+    const digest = new WtermStreamDigest();
+    for (const chunk of chunks) digest.update(new TextEncoder().encode(chunk));
+    return digest.snapshot().digest;
+  };
+
+  it("matches published FNV-1a 32-bit vectors", () => {
+    expect(digestOf([])).toBe(0x811c9dc5);
+    expect(digestOf(["a"])).toBe(0xe40c292c);
+    expect(digestOf(["abc"])).toBe(0x1a47e90b);
+    expect(digestOf(["foobar"])).toBe(0xbf9cf968);
+  });
+
+  it("is order sensitive and chunk-boundary insensitive", () => {
+    expect(digestOf(["abc"])).not.toBe(digestOf(["acb"]));
+    expect(digestOf(["abc", "def"])).toBe(digestOf(["a", "bcde", "f"]));
+  });
+
+  it("accumulates byte and chunk counts and resets", () => {
+    const digest = new WtermStreamDigest();
+    digest.update(new TextEncoder().encode("abcd"));
+    digest.update(new TextEncoder().encode("ef"));
+    expect(digest.snapshot()).toEqual({
+      digest: 0xff478a2a,
+      bytes: 6,
+      count: 2,
+    });
+    digest.reset();
+    expect(digest.snapshot()).toEqual({
+      digest: 0x811c9dc5,
+      bytes: 0,
+      count: 0,
+    });
+  });
 });
 
 describe("wterm performance instrumentation", () => {
@@ -63,6 +101,22 @@ describe("wterm performance instrumentation", () => {
 
     expect(performance.getEntriesByName("wterm.echo")[0]).toMatchObject({
       detail: { seq: 7, bytes: 2, count: 1 },
+    });
+  });
+
+  it("records the probe digest and still drops payload-shaped metadata", () => {
+    const recorder = new WtermPerformance("?wterm_perf=1");
+    recorder.mark("stream-digest", {
+      digest: 4294967295,
+      bytes: 1024,
+      count: 8,
+      ...({ text: "secret" } as Record<string, unknown>),
+    });
+
+    expect(
+      performance.getEntriesByName("wterm.stream-digest")[0],
+    ).toMatchObject({
+      detail: { digest: 4294967295, bytes: 1024, count: 8 },
     });
   });
 

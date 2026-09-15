@@ -6,12 +6,14 @@ import {
   isUsableTerminalSize,
   shouldApplyTerminalResize,
   computeFollowBottom,
+  decideTerminalResize,
   disposeGhosttyCore,
   encodeAnyEventMouseMove,
   ghosttyCoreOptions,
   loadGhosttyCore,
   preloadGhosttyCore,
   supportAnyEventMouseMode,
+  terminalWheelDelta,
 } from "./wterm-renderer";
 
 function selectionFixture({
@@ -67,6 +69,33 @@ describe("clearTerminalSelection", () => {
   });
 });
 
+describe("terminal wheel scrolling", () => {
+  it("preserves small trackpad deltas and caps a wheel event at three rows", () => {
+    expect(terminalWheelDelta(1, 0, 17, 500)).toBe(1);
+    expect(terminalWheelDelta(-8, 0, 17, 500)).toBe(-8);
+    expect(terminalWheelDelta(100, 0, 17, 500)).toBe(51);
+    expect(terminalWheelDelta(-100, 0, 17, 500)).toBe(-51);
+  });
+
+  it("normalizes line and page deltas before applying the cap", () => {
+    expect(terminalWheelDelta(2, 1, 17, 500)).toBe(34);
+    expect(terminalWheelDelta(10, 1, 17, 500)).toBe(51);
+    expect(terminalWheelDelta(1, 2, 17, 500)).toBe(51);
+    expect(terminalWheelDelta(Number.NaN, 0, 17, 500)).toBe(0);
+  });
+
+  it("uses a non-passive native listener without stealing TUI mouse reporting", () => {
+    const source = readFileSync(
+      new URL("./wterm-renderer.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain(
+      'scroller.addEventListener("wheel", onWheel, { passive: false });',
+    );
+    expect(source).toContain("if (\n          event.defaultPrevented ||");
+  });
+});
+
 describe("collapsed terminal sizes", () => {
   it("rejects the 1×1 size hidden tabs collapse into", () => {
     expect(isUsableTerminalSize(1, 1)).toBe(false);
@@ -81,7 +110,28 @@ describe("collapsed terminal sizes", () => {
     expect(shouldApplyTerminalResize(80, 24, true)).toBe(true);
   });
 
-  it("settles panel transitions before sending the final PTY resize", () => {
+  it("reaches the PTY at once for the first valid size and coalesces later ones", () => {
+    expect(decideTerminalResize(true, true, false)).toEqual({
+      send: true,
+      delayMs: 0,
+    });
+    const later = decideTerminalResize(true, true, true);
+    expect(later.send).toBe(true);
+    expect(later.delayMs).toBeGreaterThan(0);
+  });
+
+  it("ignores collapsed and unchanged sizes", () => {
+    expect(decideTerminalResize(false, true, false)).toEqual({
+      send: false,
+      delayMs: 0,
+    });
+    expect(decideTerminalResize(true, false, false)).toEqual({
+      send: false,
+      delayMs: 0,
+    });
+  });
+
+  it("applies the policy in handleResize and keeps one guarded send", () => {
     const source = readFileSync(
       new URL("./wterm-renderer.tsx", import.meta.url),
       "utf8",
@@ -90,26 +140,22 @@ describe("collapsed terminal sizes", () => {
       source.indexOf("const handleResize"),
       source.indexOf("const handleWheelCapture"),
     );
-    expect(source).toContain("const TERMINAL_RESIZE_SETTLE_MS = 250;");
-    expect(handleResizeSource).toContain(
-      "window.clearTimeout(resizeTimerRef.current)",
+    expect(handleResizeSource).toContain("decideTerminalResize(");
+    expect(handleResizeSource).toContain("if (decision.delayMs === 0) {");
+    expect(handleResizeSource).toContain("sendSettledResize();");
+    expect(source).toContain("if (!instance ||");
+    expect(source).toContain("!hasRenderedSize(instance.element)");
+    expect(source).toContain(
+      "attachment.sendResize(instance.cols, instance.rows);",
     );
-    expect(handleResizeSource).toContain(
-      "resizeTimerRef.current = window.setTimeout",
-    );
-    expect(handleResizeSource).toContain(
-      "attachment.sendResize(instance.cols, instance.rows)",
-    );
-    expect(handleResizeSource).toContain(
-      "lastResizeRef.current = { cols: instance.cols, rows: instance.rows }",
+    expect(source).toContain(
+      "lastResizeRef.current = { cols: instance.cols, rows: instance.rows };",
     );
     expect(
-      handleResizeSource.indexOf(
-        "attachment.sendResize(instance.cols, instance.rows)",
-      ),
+      source.indexOf("attachment.sendResize(instance.cols, instance.rows);"),
     ).toBeLessThan(
-      handleResizeSource.indexOf(
-        "lastResizeRef.current = { cols: instance.cols, rows: instance.rows }",
+      source.indexOf(
+        "lastResizeRef.current = { cols: instance.cols, rows: instance.rows };",
       ),
     );
     expect(source).not.toContain("resizeFrameRef");

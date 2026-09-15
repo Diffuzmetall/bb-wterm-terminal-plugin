@@ -12,6 +12,14 @@ export const WTERM_PERFORMANCE_MARKS = [
   "paint",
   "first-rows",
   "first-paint",
+  "write-start",
+  "write-end",
+  "queued",
+  "drain-start",
+  "drain-end",
+  "stream-digest",
+  "resize-request",
+  "resize-send",
 ] as const;
 
 export type WtermPerformanceMark = (typeof WTERM_PERFORMANCE_MARKS)[number];
@@ -20,6 +28,9 @@ export interface WtermPerformanceMarkMetadata {
   seq?: number;
   bytes?: number;
   count?: number;
+  digest?: number;
+  cols?: number;
+  rows?: number;
 }
 
 export interface WtermPerformanceStats {
@@ -122,7 +133,12 @@ export class WtermPerformance {
     const detail = Object.fromEntries(
       Object.entries(metadata ?? {}).filter(
         ([key, value]) =>
-          (key === "seq" || key === "bytes" || key === "count") &&
+          (key === "seq" ||
+            key === "bytes" ||
+            key === "count" ||
+            key === "digest" ||
+            key === "cols" ||
+            key === "rows") &&
           Number.isSafeInteger(value) &&
           value >= 0,
       ),
@@ -176,6 +192,38 @@ export class WtermPerformance {
         // Diagnostic cleanup is best effort.
       }
     }
+  }
+}
+
+/**
+ * FNV-1a (32 bit) over the bytes handed to the terminal core, in delivery
+ * order. Probe-only: it detects dropped, duplicated or reordered chunks in a
+ * controlled burst run and is not a cryptographic digest. Carries no payload.
+ */
+export class WtermStreamDigest {
+  private hash = 0x811c9dc5;
+  private bytes = 0;
+  private count = 0;
+
+  update(chunk: Uint8Array): void {
+    let hash = this.hash;
+    for (let index = 0; index < chunk.byteLength; index += 1) {
+      hash ^= chunk[index];
+      hash = Math.imul(hash, 0x01000193);
+    }
+    this.hash = hash >>> 0;
+    this.bytes += chunk.byteLength;
+    this.count += 1;
+  }
+
+  snapshot(): { digest: number; bytes: number; count: number } {
+    return { digest: this.hash, bytes: this.bytes, count: this.count };
+  }
+
+  reset(): void {
+    this.hash = 0x811c9dc5;
+    this.bytes = 0;
+    this.count = 0;
   }
 }
 

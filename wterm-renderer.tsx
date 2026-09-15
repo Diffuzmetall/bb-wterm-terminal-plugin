@@ -11,7 +11,11 @@ import {
 import { GhosttyCore } from "@wterm/ghostty";
 import { Terminal, type TerminalHandle } from "@wterm/react";
 import type { TerminalAttachment } from "./terminal-attachment.js";
-import { markWtermPerformance, wtermPerformance } from "./wterm-performance.ts";
+import {
+  markWtermPerformance,
+  wtermPerformance,
+  WtermStreamDigest,
+} from "./wterm-performance.ts";
 import { terminalLinkAction, terminalLinkHref } from "./terminal-links.js";
 import { getPluginToken } from "./plugin-token.js";
 import {
@@ -49,6 +53,32 @@ const anyEventMouseModes = new WeakMap<
 type AnyEventCore = Parameters<typeof anyEventMouseModes.get>[0];
 const MIN_USABLE_TERMINAL_CELLS = 2;
 const TERMINAL_RESIZE_SETTLE_MS = 250;
+const MAX_WHEEL_SCROLL_ROWS = 3;
+
+export interface TerminalResizeDecision {
+  /** Whether the PTY should be told about this size at all. */
+  send: boolean;
+  /** 0 reaches the PTY at once; a positive value coalesces animation frames. */
+  delayMs: number;
+}
+
+/**
+ * The first valid resize after a core (re)load reaches the PTY immediately, so
+ * the shell never keeps running at the pre-layout size. Later resizes wait for
+ * BB's 220ms panel animation, so TUIs do not paint a series of intermediate
+ * SIGWINCH frames over the changing grid.
+ */
+export function decideTerminalResize(
+  sizeIsApplicable: boolean,
+  sizeChanged: boolean,
+  initialResizeSent: boolean,
+): TerminalResizeDecision {
+  if (!sizeIsApplicable || !sizeChanged) return { send: false, delayMs: 0 };
+  return {
+    send: true,
+    delayMs: initialResizeSent ? TERMINAL_RESIZE_SETTLE_MS : 0,
+  };
+}
 
 /**
  * Hidden plugin tabs collapse to 0×0. `@wterm/dom` then does
@@ -84,6 +114,31 @@ export function computeFollowBottom(element: {
   scrollTop: number;
 }): boolean {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
+}
+
+/** Keep wheel notches bounded while preserving small pixel deltas from trackpads. */
+export function terminalWheelDelta(
+  deltaY: number,
+  deltaMode: number,
+  rowHeight: number,
+  clientHeight: number,
+): number {
+  if (
+    !Number.isFinite(deltaY) ||
+    !Number.isFinite(rowHeight) ||
+    rowHeight <= 0
+  ) {
+    return 0;
+  }
+  const unit =
+    deltaMode === 1
+      ? rowHeight
+      : deltaMode === 2 && Number.isFinite(clientHeight) && clientHeight > 0
+        ? clientHeight
+        : 1;
+  const pixels = deltaY * unit;
+  const limit = rowHeight * MAX_WHEEL_SCROLL_ROWS;
+  return Math.sign(pixels) * Math.min(Math.abs(pixels), limit);
 }
 
 export function getAnyEventMouseModeState(core: AnyEventCore): {
@@ -496,10 +551,12 @@ export function WtermRenderer({
   const clearSelectionBoundaryRef = useRef<(() => void) | null>(null);
   const tuiCopyDragCleanupRef = useRef<(() => void) | null>(null);
   const resizeTimerRef = useRef<number | null>(null);
+  const initialResizeSentRef = useRef(false);
   const paintFrameRef = useRef<number | null>(null);
   const lastResizeRef = useRef({ cols: 0, rows: 0 });
   const writesOpenRef = useRef(false);
   const pendingWritesRef = useRef<Uint8Array[]>([]);
+  const streamDigestRef = useRef<WtermStreamDigest | null>(null);
   const readyRef = useRef(false);
   const tuiDragRef = useRef<{
     layout: CellLayout;
@@ -510,10 +567,13 @@ export function WtermRenderer({
   const lastAnyEventCellRef = useRef<GridPoint | null>(null);
   const followBottomRef = useRef(true);
   const followScrollCleanupRef = useRef<(() => void) | null>(null);
+  const rowHeightPx = Math.ceil(fontSizePx * 1.2);
+  const rowHeightPxRef = useRef(rowHeightPx);
+  rowHeightPxRef.current = rowHeightPx;
   const terminalFontStyle: TerminalFontStyle = {
     "--term-font-family": `Menlo, Consolas, "DejaVu Sans Mono", "Courier New", "${NERD_FONT_FAMILY}", monospace`,
     "--term-font-size": `${fontSizePx}px`,
-    "--term-row-height": `${Math.ceil(fontSizePx * 1.2)}px`,
+    "--term-row-height": `${rowHeightPx}px`,
   };
 
   const approveClipboardRequest = useCallback(async () => {
@@ -536,7 +596,11 @@ export function WtermRenderer({
     setReady(false);
     writesOpenRef.current = false;
     pendingWritesRef.current = [];
+    streamDigestRef.current = wtermPerformance.enabled
+      ? new WtermStreamDigest()
+      : null;
     lastResizeRef.current = { cols: 0, rows: 0 };
+    initialResizeSentRef.current = false;
     void loadNerdFont().catch(() => undefined);
     void loadGhosttyCore(wasmUrl, onClipboardRequest).then(
       (loaded) => {
@@ -566,11 +630,25 @@ export function WtermRenderer({
     return attachment.subscribe(({ seq, bytes }) => {
       if (!writesOpenRef.current) {
         pendingWritesRef.current.push(bytes);
+        if (wtermPerformance.enabled) {
+          markWtermPerformance("queued", {
+            seq,
+            bytes: bytes.byteLength,
+            count: pendingWritesRef.current.length,
+          });
+        }
         return;
       }
       try {
+        if (wtermPerformance.enabled) {
+          markWtermPerformance("write-start", { seq, bytes: bytes.byteLength });
+        }
         terminalRef.current?.write(bytes);
         if (wtermPerformance.enabled) {
+          streamDigestRef.current?.update(bytes);
+          markWtermPerformance("write-end", { seq, bytes: bytes.byteLength });
+          const digest = streamDigestRef.current?.snapshot();
+          if (digest) markWtermPerformance("stream-digest", digest);
           if (paintFrameRef.current !== null) {
             window.cancelAnimationFrame(paintFrameRef.current);
           }
@@ -791,12 +869,27 @@ export function WtermRenderer({
     if (writesOpenRef.current) return;
     writesOpenRef.current = true;
     const pending = pendingWritesRef.current.splice(0);
+    if (wtermPerformance.enabled && pending.length > 0) {
+      markWtermPerformance("drain-start", { count: pending.length });
+    }
     for (const bytes of pending) {
       try {
+        if (wtermPerformance.enabled) {
+          markWtermPerformance("write-start", { bytes: bytes.byteLength });
+        }
         terminalRef.current?.write(bytes);
+        if (wtermPerformance.enabled) {
+          streamDigestRef.current?.update(bytes);
+          markWtermPerformance("write-end", { bytes: bytes.byteLength });
+        }
       } catch {
         // Replay must not unmount the renderer.
       }
+    }
+    if (wtermPerformance.enabled && pending.length > 0) {
+      markWtermPerformance("drain-end", { count: pending.length });
+      const digest = streamDigestRef.current?.snapshot();
+      if (digest) markWtermPerformance("stream-digest", digest);
     }
   }, []);
 
@@ -806,6 +899,26 @@ export function WtermRenderer({
     },
     [attachment],
   );
+
+  /** Send the size the PTY should settle on, once the grid is real. */
+  const sendSettledResize = useCallback(() => {
+    const instance = terminalRef.current?.instance;
+    if (
+      !instance ||
+      !hasRenderedSize(instance.element) ||
+      (lastResizeRef.current.cols === instance.cols &&
+        lastResizeRef.current.rows === instance.rows)
+    ) {
+      return;
+    }
+    markWtermPerformance("resize-send", {
+      cols: instance.cols,
+      rows: instance.rows,
+    });
+    attachment.sendResize(instance.cols, instance.rows);
+    lastResizeRef.current = { cols: instance.cols, rows: instance.rows };
+    initialResizeSentRef.current = true;
+  }, [attachment]);
 
   const handleReady = useCallback(() => {
     setReady(true);
@@ -821,10 +934,33 @@ export function WtermRenderer({
       const onScroll = () => {
         followBottomRef.current = computeFollowBottom(scroller);
       };
+      const onWheel = (event: WheelEvent) => {
+        // Wterm prevents the event first when a TUI has mouse reporting enabled.
+        if (
+          event.defaultPrevented ||
+          event.ctrlKey ||
+          event.metaKey ||
+          Math.abs(event.deltaX) > Math.abs(event.deltaY)
+        ) {
+          return;
+        }
+        const delta = terminalWheelDelta(
+          event.deltaY,
+          event.deltaMode,
+          rowHeightPxRef.current,
+          scroller.clientHeight,
+        );
+        if (delta === 0) return;
+        const before = scroller.scrollTop;
+        scroller.scrollTop += delta;
+        if (scroller.scrollTop !== before) event.preventDefault();
+      };
       onScroll();
       scroller.addEventListener("scroll", onScroll, { passive: true });
+      scroller.addEventListener("wheel", onWheel, { passive: false });
       followScrollCleanupRef.current = () => {
         scroller.removeEventListener("scroll", onScroll);
+        scroller.removeEventListener("wheel", onWheel);
       };
     }
     if (refitTerminalAfterFontChange(instance)) {
@@ -840,7 +976,12 @@ export function WtermRenderer({
       return;
     }
     lastResizeRef.current = { cols: instance.cols, rows: instance.rows };
+    initialResizeSentRef.current = true;
     flushPendingWrites();
+    markWtermPerformance("resize-send", {
+      cols: instance.cols,
+      rows: instance.rows,
+    });
     attachment.sendResize(instance.cols, instance.rows);
   }, [attachment, flushPendingWrites]);
 
@@ -849,28 +990,25 @@ export function WtermRenderer({
       anyEventLayoutRef.current = null;
       lastAnyEventCellRef.current = null;
       const element = terminalRef.current?.instance?.element;
-      if (
-        !shouldApplyTerminalResize(
+      const decision = decideTerminalResize(
+        shouldApplyTerminalResize(
           cols,
           rows,
           element ? hasRenderedSize(element) : false,
-        )
-      ) {
-        if (resizeTimerRef.current !== null) {
-          window.clearTimeout(resizeTimerRef.current);
-          resizeTimerRef.current = null;
-        }
-        return;
-      }
-      flushPendingWrites();
+        ),
+        lastResizeRef.current.cols !== cols ||
+          lastResizeRef.current.rows !== rows,
+        initialResizeSentRef.current,
+      );
       if (resizeTimerRef.current !== null) {
         window.clearTimeout(resizeTimerRef.current);
         resizeTimerRef.current = null;
       }
-      if (
-        lastResizeRef.current.cols === cols &&
-        lastResizeRef.current.rows === rows
-      ) {
+      if (!decision.send) return;
+      flushPendingWrites();
+      markWtermPerformance("resize-request", { cols, rows });
+      if (decision.delayMs === 0) {
+        sendSettledResize();
         return;
       }
       // BB animates panel maximize/restore for 220ms. Keep Wterm's local grid
@@ -878,19 +1016,10 @@ export function WtermRenderer({
       // series of intermediate SIGWINCH frames over the changing grid.
       resizeTimerRef.current = window.setTimeout(() => {
         resizeTimerRef.current = null;
-        const instance = terminalRef.current?.instance;
-        if (
-          instance &&
-          hasRenderedSize(instance.element) &&
-          (lastResizeRef.current.cols !== instance.cols ||
-            lastResizeRef.current.rows !== instance.rows)
-        ) {
-          attachment.sendResize(instance.cols, instance.rows);
-          lastResizeRef.current = { cols: instance.cols, rows: instance.rows };
-        }
-      }, TERMINAL_RESIZE_SETTLE_MS);
+        sendSettledResize();
+      }, decision.delayMs);
     },
-    [attachment, flushPendingWrites],
+    [flushPendingWrites, sendSettledResize],
   );
 
   const handleWheelCapture = useCallback(
