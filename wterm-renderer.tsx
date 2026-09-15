@@ -523,6 +523,115 @@ export function refitTerminalAfterFontChange(
   return true;
 }
 
+/**
+ * Write failures are split by what actually broke:
+ *
+ * - `response`: `@wterm/dom` applies the whole chunk to the core and only then
+ *   rethrows the first error raised while delivering terminal responses. The
+ *   screen is correct; the PTY is missing a response it may be waiting for.
+ * - `core`: anything else, including a WASM trap inside the bridge, which
+ *   writes in 8 KiB slices and can therefore leave part of a chunk applied.
+ *   The visible screen can no longer be trusted.
+ */
+export type WtermWriteFailurePhase = "live" | "drain";
+export type WtermWriteFailureKind = "core" | "response";
+
+export interface WtermWriteFailure {
+  phase: WtermWriteFailurePhase;
+  kind: WtermWriteFailureKind;
+  /** Sequence of the chunk that threw, when the attachment supplied one. */
+  seq: number | null;
+  bytes: number;
+  generation: number;
+  /** Chunks discarded in that batch because the failure stopped the drain. */
+  dropped: number;
+  /** Constructor name only: never the message, which can carry PTY payload. */
+  errorName: string;
+}
+
+/** Tagged replacement for errors raised by our own response delivery. */
+export class WtermResponseDeliveryError extends Error {
+  constructor() {
+    super("terminal response delivery failed");
+  }
+}
+
+export function classifyWtermWriteFailure(
+  error: unknown,
+): WtermWriteFailureKind {
+  return error instanceof WtermResponseDeliveryError ? "response" : "core";
+}
+
+/** Metadata-only failure record: no message, no stack, no chunk payload. */
+export function wtermWriteFailureMetadata(input: {
+  phase: WtermWriteFailurePhase;
+  kind: WtermWriteFailureKind;
+  seq: number | null;
+  bytes: number;
+  generation: number;
+  dropped: number;
+  error: unknown;
+}): WtermWriteFailure {
+  const name =
+    input.error instanceof Error && input.error.name ? input.error.name : "NonError";
+  return {
+    phase: input.phase,
+    kind: input.kind,
+    seq: input.seq,
+    bytes: input.bytes,
+    generation: input.generation,
+    dropped: input.dropped,
+    errorName: name.slice(0, 40),
+  };
+}
+
+/**
+ * Diagnostic-only fault injection for the real-browser failure smoke test.
+ * Inert unless `?wterm_perf=1&wterm_write_fault=<kind>@<phase>` is present, so
+ * the failure path is reachable without a real WASM fault.
+ */
+export interface WtermWriteFault {
+  kind: WtermWriteFailureKind;
+  phase: WtermWriteFailurePhase;
+}
+
+export function parseWtermWriteFault(
+  query: string,
+  enabled: boolean,
+): WtermWriteFault | null {
+  if (!enabled) return null;
+  let raw: string | null;
+  try {
+    raw = new URLSearchParams(query).get("wterm_write_fault");
+  } catch {
+    return null;
+  }
+  for (const kind of ["core", "response"] as const) {
+    for (const phase of ["live", "drain"] as const) {
+      if (raw === `${kind}@${phase}`) return { kind, phase };
+    }
+  }
+  return null;
+}
+
+const wtermWriteFault = parseWtermWriteFault(
+  globalThis.location?.search ?? "",
+  wtermPerformance.enabled,
+);
+let writeFaultArmed = wtermWriteFault !== null;
+
+/** Diagnostic-only: throw where the core (or its response drain) would. */
+function throwInjectedWriteFault(
+  kind: WtermWriteFailureKind,
+  phase: WtermWriteFailurePhase,
+): void {
+  if (!writeFaultArmed || wtermWriteFault === null) return;
+  if (wtermWriteFault.kind !== kind || wtermWriteFault.phase !== phase) return;
+  writeFaultArmed = false;
+  if (kind === "response") throw new WtermResponseDeliveryError();
+  throw new Error("injected core write failure");
+}
+
 type TerminalFontStyle = CSSProperties & {
   "--term-font-family": string;
   "--term-font-size": string;
@@ -555,8 +664,17 @@ export function WtermRenderer({
   const paintFrameRef = useRef<number | null>(null);
   const lastResizeRef = useRef({ cols: 0, rows: 0 });
   const writesOpenRef = useRef(false);
-  const pendingWritesRef = useRef<Uint8Array[]>([]);
+  const pendingWritesRef = useRef<
+    Array<{ seq: number | null; bytes: Uint8Array }>
+  >([]);
   const streamDigestRef = useRef<WtermStreamDigest | null>(null);
+  const writeFailureRef = useRef<WtermWriteFailure | null>(null);
+  const writeStopRef = useRef(false);
+  const droppedWritesRef = useRef(0);
+  const firstDeliveredSeqRef = useRef<number | null>(null);
+  const [writeFailure, setWriteFailure] = useState<WtermWriteFailure | null>(
+    null,
+  );
   const readyRef = useRef(false);
   const tuiDragRef = useRef<{
     layout: CellLayout;
@@ -584,6 +702,65 @@ export function WtermRenderer({
     }
   }, [clipboardRequest]);
 
+  const generationRef = useRef(0);
+  generationRef.current = reloadNonce;
+
+  /**
+   * Record a failed write. Metadata only: the exception message can carry PTY
+   * payload, so neither the log nor the banner ever includes it.
+   */
+  const reportWriteFailure = useCallback(
+    (
+      phase: WtermWriteFailurePhase,
+      chunk: { seq: number | null; bytes: number },
+      failure: unknown,
+      dropped: number,
+    ) => {
+      const kind = classifyWtermWriteFailure(failure);
+      const generation = generationRef.current;
+      const previous = writeFailureRef.current;
+      const metadata = wtermWriteFailureMetadata({
+        phase,
+        kind,
+        seq: chunk.seq,
+        bytes: chunk.bytes,
+        generation,
+        dropped,
+        error: failure,
+      });
+      writeFailureRef.current = metadata;
+      if (kind === "core") {
+        // Fail-stop: stop applying the PTY stream and stop presenting the
+        // current screen as current. A fresh core is the only recovery this
+        // renderer offers; the PTY itself keeps running.
+        writeStopRef.current = true;
+        writesOpenRef.current = false;
+        pendingWritesRef.current = [];
+      }
+      const firstOfKind =
+        previous?.kind !== kind ||
+        previous?.phase !== phase ||
+        previous?.generation !== generation;
+      if (firstOfKind) {
+        markWtermPerformance("write-failure", {
+          seq: chunk.seq ?? 0,
+          bytes: chunk.bytes,
+          count: dropped,
+        });
+        // SAFETY: the record is constructed above and holds no chunk payload.
+        console.error("[wterm] terminal write failed", metadata);
+      }
+      setWriteFailure(metadata);
+    },
+    [],
+  );
+
+  /** Only recovery this renderer owns: a fresh core plus a replayed history. */
+  const reloadAfterWriteFailure = useCallback(() => {
+    setWriteFailure(null);
+    setReloadNonce((current) => current + 1);
+  }, []);
+
   useEffect(() => {
     markWtermPerformance("effect-start");
     let alive = true;
@@ -596,6 +773,11 @@ export function WtermRenderer({
     setReady(false);
     writesOpenRef.current = false;
     pendingWritesRef.current = [];
+    writeStopRef.current = false;
+    writeFailureRef.current = null;
+    droppedWritesRef.current = 0;
+    firstDeliveredSeqRef.current = null;
+    setWriteFailure(null);
     streamDigestRef.current = wtermPerformance.enabled
       ? new WtermStreamDigest()
       : null;
@@ -628,8 +810,17 @@ export function WtermRenderer({
   useEffect(() => {
     if (!ready) return;
     return attachment.subscribe(({ seq, bytes }) => {
+      if (firstDeliveredSeqRef.current === null) {
+        firstDeliveredSeqRef.current = seq;
+      }
+      if (writeStopRef.current) {
+        // The surface is already flagged as stale; applying more output would
+        // only make the frozen screen look current again.
+        droppedWritesRef.current += 1;
+        return;
+      }
       if (!writesOpenRef.current) {
-        pendingWritesRef.current.push(bytes);
+        pendingWritesRef.current.push({ seq, bytes });
         if (wtermPerformance.enabled) {
           markWtermPerformance("queued", {
             seq,
@@ -643,7 +834,9 @@ export function WtermRenderer({
         if (wtermPerformance.enabled) {
           markWtermPerformance("write-start", { seq, bytes: bytes.byteLength });
         }
+        throwInjectedWriteFault("core", "live");
         terminalRef.current?.write(bytes);
+        throwInjectedWriteFault("response", "live");
         if (wtermPerformance.enabled) {
           streamDigestRef.current?.update(bytes);
           markWtermPerformance("write-end", { seq, bytes: bytes.byteLength });
@@ -657,12 +850,13 @@ export function WtermRenderer({
             markWtermPerformance("paint", { seq, bytes: bytes.byteLength });
           });
         }
-      } catch {
-        // A live write must not unmount the renderer. Replay and OSC 52
-        // can throw inside Ghostty without meaning init failed.
+      } catch (failure) {
+        // A live write must not unmount the renderer, but it must not be
+        // swallowed either: report it, then stop applying the stream.
+        reportWriteFailure("live", { seq, bytes: bytes.byteLength }, failure, 0);
       }
     });
-  }, [attachment, ready]);
+  }, [attachment, ready, reportWriteFailure]);
 
   useEffect(() => {
     if (!ready) return;
@@ -872,18 +1066,35 @@ export function WtermRenderer({
     if (wtermPerformance.enabled && pending.length > 0) {
       markWtermPerformance("drain-start", { count: pending.length });
     }
-    for (const bytes of pending) {
+    for (const [index, chunk] of pending.entries()) {
+      if (writeStopRef.current) return;
       try {
         if (wtermPerformance.enabled) {
-          markWtermPerformance("write-start", { bytes: bytes.byteLength });
+          markWtermPerformance("write-start", {
+            seq: chunk.seq ?? 0,
+            bytes: chunk.bytes.byteLength,
+          });
         }
-        terminalRef.current?.write(bytes);
+        throwInjectedWriteFault("core", "drain");
+        terminalRef.current?.write(chunk.bytes);
+        throwInjectedWriteFault("response", "drain");
         if (wtermPerformance.enabled) {
-          streamDigestRef.current?.update(bytes);
-          markWtermPerformance("write-end", { bytes: bytes.byteLength });
+          streamDigestRef.current?.update(chunk.bytes);
+          markWtermPerformance("write-end", {
+            seq: chunk.seq ?? 0,
+            bytes: chunk.bytes.byteLength,
+          });
         }
-      } catch {
-        // Replay must not unmount the renderer.
+      } catch (failure) {
+        reportWriteFailure(
+          "drain",
+          { seq: chunk.seq, bytes: chunk.bytes.byteLength },
+          failure,
+          pending.length - index - 1,
+        );
+        // A core failure stops the replay; an undelivered response does not,
+        // because that chunk already reached the core.
+        if (writeStopRef.current) return;
       }
     }
     if (wtermPerformance.enabled && pending.length > 0) {
@@ -891,11 +1102,17 @@ export function WtermRenderer({
       const digest = streamDigestRef.current?.snapshot();
       if (digest) markWtermPerformance("stream-digest", digest);
     }
-  }, []);
+  }, [reportWriteFailure]);
 
   const handleData = useCallback(
     (data: string) => {
-      attachment.sendInput(new TextEncoder().encode(data));
+      try {
+        attachment.sendInput(new TextEncoder().encode(data));
+      } catch {
+        // @wterm/dom rethrows the first response-delivery error after the chunk
+        // was fully applied, so tag it instead of blaming the core.
+        throw new WtermResponseDeliveryError();
+      }
     },
     [attachment],
   );
@@ -1053,6 +1270,9 @@ export function WtermRenderer({
     [onLinkClick],
   );
 
+  const historyTruncated =
+    firstDeliveredSeqRef.current !== null && firstDeliveredSeqRef.current > 0;
+
   if (error) {
     const detail = error instanceof Error ? error.message : String(error);
     return (
@@ -1102,6 +1322,36 @@ export function WtermRenderer({
         >
           Copy terminal clipboard request
         </button>
+      )}
+      {writeFailure && (
+        <div
+          className="wterm-write-failure"
+          role={writeFailure.kind === "core" ? "alert" : "status"}
+        >
+          <span>
+            {writeFailure.kind === "core"
+              ? `Terminal output stopped being applied (${writeFailure.phase} write failed, seq ${writeFailure.seq ?? "unknown"}, ${writeFailure.bytes} B, ${writeFailure.errorName}). The screen below is frozen and may be out of date.`
+              : `A terminal response could not be delivered (${writeFailure.phase}, seq ${writeFailure.seq ?? "unknown"}). The PTY may be waiting for it; the screen is still updating.`}
+          </span>
+          {writeFailure.kind === "core" && writeFailure.dropped > 0 && (
+            <span>{writeFailure.dropped} queued chunk(s) were discarded.</span>
+          )}
+          {writeFailure.kind === "core" && historyTruncated && (
+            <span>
+              A reload replays only the history the PTY still retains; earlier
+              output cannot be recovered.
+            </span>
+          )}
+          {writeFailure.kind === "core" ? (
+            <button type="button" onClick={reloadAfterWriteFailure}>
+              Reload terminal
+            </button>
+          ) : (
+            <button type="button" onClick={() => setWriteFailure(null)}>
+              Dismiss
+            </button>
+          )}
+        </div>
       )}
       <Terminal
         ref={terminalRef}

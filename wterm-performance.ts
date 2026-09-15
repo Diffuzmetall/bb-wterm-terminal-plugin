@@ -20,6 +20,7 @@ export const WTERM_PERFORMANCE_MARKS = [
   "stream-digest",
   "resize-request",
   "resize-send",
+  "write-failure",
 ] as const;
 
 export type WtermPerformanceMark = (typeof WTERM_PERFORMANCE_MARKS)[number];

@@ -2,8 +2,10 @@ import { readFileSync } from "node:fs";
 import { GhosttyCore } from "@wterm/ghostty";
 import { describe, expect, it, vi } from "vitest";
 import {
+  classifyWtermWriteFailure,
   clearTerminalSelection,
   isUsableTerminalSize,
+  parseWtermWriteFault,
   shouldApplyTerminalResize,
   computeFollowBottom,
   decideTerminalResize,
@@ -14,6 +16,8 @@ import {
   preloadGhosttyCore,
   supportAnyEventMouseMode,
   terminalWheelDelta,
+  wtermWriteFailureMetadata,
+  WtermResponseDeliveryError,
 } from "./wterm-renderer";
 
 function selectionFixture({
@@ -509,5 +513,154 @@ describe("OSC 52 from TUI output", () => {
 
     expect(requestsA).toEqual(["panel-a"]);
     expect(requestsB).toEqual(["panel-b"]);
+  });
+});
+
+describe("write failures stay visible and fail stop", () => {
+  const rendererSource = () =>
+    readFileSync(new URL("./wterm-renderer.tsx", import.meta.url), "utf8");
+
+  it("blames the core only when response delivery is not the cause", () => {
+    expect(classifyWtermWriteFailure(new WtermResponseDeliveryError())).toBe(
+      "response",
+    );
+    expect(classifyWtermWriteFailure(new Error("wasm trap"))).toBe("core");
+    expect(classifyWtermWriteFailure(new RangeError("memory"))).toBe("core");
+    expect(classifyWtermWriteFailure("not an error")).toBe("core");
+    expect(classifyWtermWriteFailure(undefined)).toBe("core");
+    expect(classifyWtermWriteFailure(null)).toBe("core");
+  });
+
+  it("keeps the exception message and payload out of the failure record", () => {
+    const payload = "SECRET_PTY_PAYLOAD_8134";
+    const metadata = wtermWriteFailureMetadata({
+      phase: "live",
+      kind: "core",
+      seq: 42,
+      bytes: 8192,
+      generation: 3,
+      dropped: 4,
+      error: new RangeError(payload),
+    });
+    expect(metadata).toEqual({
+      phase: "live",
+      kind: "core",
+      seq: 42,
+      bytes: 8192,
+      generation: 3,
+      dropped: 4,
+      errorName: "RangeError",
+    });
+    const serialized = JSON.stringify(metadata);
+    expect(serialized).not.toContain(payload);
+    expect(serialized).not.toContain("message");
+    expect(serialized).not.toContain("stack");
+  });
+
+  it("keeps the failure record typed when the throw is not an Error", () => {
+    expect(
+      wtermWriteFailureMetadata({
+        phase: "drain",
+        kind: "response",
+        seq: null,
+        bytes: 0,
+        generation: 0,
+        dropped: 0,
+        error: { toString: () => "SECRET" },
+      }),
+    ).toEqual({
+      phase: "drain",
+      kind: "response",
+      seq: null,
+      bytes: 0,
+      generation: 0,
+      dropped: 0,
+      errorName: "NonError",
+    });
+  });
+
+  it("keeps fault injection inert unless the diagnostic flag asks for it", () => {
+    const query = "?wterm_perf=1&wterm_write_fault=core@live";
+    expect(parseWtermWriteFault(query, false)).toBeNull();
+    expect(parseWtermWriteFault(query, true)).toEqual({
+      kind: "core",
+      phase: "live",
+    });
+    expect(
+      parseWtermWriteFault("?wterm_write_fault=response@drain", true),
+    ).toEqual({ kind: "response", phase: "drain" });
+    expect(
+      parseWtermWriteFault("?wterm_write_fault=core@drain", true),
+    ).toEqual({ kind: "core", phase: "drain" });
+    expect(
+      parseWtermWriteFault("?wterm_write_fault=response@live", true),
+    ).toEqual({ kind: "response", phase: "live" });
+    expect(parseWtermWriteFault("?wterm_write_fault=nonsense", true)).toBeNull();
+    expect(parseWtermWriteFault("?wterm_perf=1", true)).toBeNull();
+    expect(parseWtermWriteFault("", true)).toBeNull();
+  });
+
+  it("covers the live write and the replay drain without an empty catch", () => {
+    const source = rendererSource();
+    expect(source).not.toContain("// Replay must not unmount the renderer.");
+    expect(source).not.toContain(
+      "can throw inside Ghostty without meaning init failed.",
+    );
+
+    const live = source.slice(
+      source.indexOf("return attachment.subscribe(({ seq, bytes }) => {"),
+      source.indexOf("}, [attachment, ready, reportWriteFailure]);"),
+    );
+    expect(live.length).toBeGreaterThan(0);
+    expect(live).toContain("reportWriteFailure(\"live\"");
+    expect(live).toContain("if (writeStopRef.current) {");
+    expect(live.indexOf("if (writeStopRef.current) {")).toBeLessThan(
+      live.indexOf("terminalRef.current?.write(bytes);"),
+    );
+
+    const drain = source.slice(
+      source.indexOf("const flushPendingWrites"),
+      source.indexOf("const handleData"),
+    );
+    expect(drain.length).toBeGreaterThan(0);
+    expect(drain).toContain("reportWriteFailure(");
+    expect(drain).toContain("\"drain\",");
+    expect(drain).toContain("if (writeStopRef.current) return;");
+    expect(drain.indexOf("if (writeStopRef.current) return;")).toBeLessThan(
+      drain.indexOf("terminalRef.current?.write(chunk.bytes);"),
+    );
+    expect(drain).toContain("pending.length - index - 1");
+  });
+
+  it("latches the stop, offers one reload, and never retries a chunk", () => {
+    const source = rendererSource();
+    expect(source).toContain("writeStopRef.current = true;");
+    expect(source).toContain("pendingWritesRef.current = [];");
+    expect(source).toContain("setReloadNonce((current) => current + 1);");
+    expect(source).toContain('className="wterm-write-failure"');
+    expect(source).toContain(
+      'role={writeFailure.kind === "core" ? "alert" : "status"}',
+    );
+    expect(source).toContain("Reload terminal");
+    expect(source).toContain("historyTruncated");
+    expect(source).toContain("throw new WtermResponseDeliveryError();");
+    expect(source).toContain("firstDeliveredSeqRef.current === null");
+    // No blind replay of a chunk that may have been applied.
+    expect(source).not.toMatch(/terminalRef\.current\?\.write\([^)]*\)[\s\S]{0,200}?catch[\s\S]{0,120}?terminalRef\.current\?\.write/);
+  });
+
+  it("tags response-delivery throws without logging the raw exception", () => {
+    const source = rendererSource();
+    const handleData = source.slice(
+      source.indexOf("const handleData"),
+      source.indexOf("const sendSettledResize"),
+    );
+    expect(handleData).toContain("attachment.sendInput(");
+    expect(handleData).toContain("throw new WtermResponseDeliveryError();");
+    expect(source).toContain(
+      'console.error("[wterm] terminal write failed", metadata);',
+    );
+    expect(source).not.toContain("console.error(failure");
+    expect(source).not.toContain("console.error(error");
   });
 });
