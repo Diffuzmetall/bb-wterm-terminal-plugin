@@ -573,7 +573,9 @@ export function wtermWriteFailureMetadata(input: {
   error: unknown;
 }): WtermWriteFailure {
   const name =
-    input.error instanceof Error && input.error.name ? input.error.name : "NonError";
+    input.error instanceof Error && input.error.name
+      ? input.error.name
+      : "NonError";
   return {
     phase: input.phase,
     kind: input.kind,
@@ -853,7 +855,12 @@ export function WtermRenderer({
       } catch (failure) {
         // A live write must not unmount the renderer, but it must not be
         // swallowed either: report it, then stop applying the stream.
-        reportWriteFailure("live", { seq, bytes: bytes.byteLength }, failure, 0);
+        reportWriteFailure(
+          "live",
+          { seq, bytes: bytes.byteLength },
+          failure,
+          0,
+        );
       }
     });
   }, [attachment, ready, reportWriteFailure]);

@@ -117,7 +117,8 @@ html[data-wterm-native-selection="active"] [data-wterm-selection-active] * {
  align-items: center;
  gap: 0.5rem;
  padding: 0.375rem 0.5rem;
- border-bottom: 1px solid color-mix(in oklch, var(--destructive-text, red) 35%, var(--canvas));
+ border-bottom: 1px solid
+  color-mix(in oklch, var(--destructive-text, red) 35%, var(--canvas));
  color: var(--destructive-text, var(--ink));
  font-size: 0.8125rem;
 }

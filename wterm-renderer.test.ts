@@ -519,6 +519,9 @@ describe("OSC 52 from TUI output", () => {
 describe("write failures stay visible and fail stop", () => {
   const rendererSource = () =>
     readFileSync(new URL("./wterm-renderer.tsx", import.meta.url), "utf8");
+  // These guards read the renderer as text, so they must survive reformatting:
+  // collapse every run of whitespace before matching a pattern.
+  const flat = (text: string) => text.replace(/\s+/g, " ");
 
   it("blames the core only when response delivery is not the cause", () => {
     expect(classifyWtermWriteFailure(new WtermResponseDeliveryError())).toBe(
@@ -589,13 +592,15 @@ describe("write failures stay visible and fail stop", () => {
     expect(
       parseWtermWriteFault("?wterm_write_fault=response@drain", true),
     ).toEqual({ kind: "response", phase: "drain" });
-    expect(
-      parseWtermWriteFault("?wterm_write_fault=core@drain", true),
-    ).toEqual({ kind: "core", phase: "drain" });
+    expect(parseWtermWriteFault("?wterm_write_fault=core@drain", true)).toEqual(
+      { kind: "core", phase: "drain" },
+    );
     expect(
       parseWtermWriteFault("?wterm_write_fault=response@live", true),
     ).toEqual({ kind: "response", phase: "live" });
-    expect(parseWtermWriteFault("?wterm_write_fault=nonsense", true)).toBeNull();
+    expect(
+      parseWtermWriteFault("?wterm_write_fault=nonsense", true),
+    ).toBeNull();
     expect(parseWtermWriteFault("?wterm_perf=1", true)).toBeNull();
     expect(parseWtermWriteFault("", true)).toBeNull();
   });
@@ -607,24 +612,28 @@ describe("write failures stay visible and fail stop", () => {
       "can throw inside Ghostty without meaning init failed.",
     );
 
-    const live = source.slice(
-      source.indexOf("return attachment.subscribe(({ seq, bytes }) => {"),
-      source.indexOf("}, [attachment, ready, reportWriteFailure]);"),
+    const live = flat(
+      source.slice(
+        source.indexOf("return attachment.subscribe(({ seq, bytes }) => {"),
+        source.indexOf("}, [attachment, ready, reportWriteFailure]);"),
+      ),
     );
     expect(live.length).toBeGreaterThan(0);
-    expect(live).toContain("reportWriteFailure(\"live\"");
+    expect(live).toMatch(/reportWriteFailure\(\s*"live"/);
     expect(live).toContain("if (writeStopRef.current) {");
     expect(live.indexOf("if (writeStopRef.current) {")).toBeLessThan(
       live.indexOf("terminalRef.current?.write(bytes);"),
     );
 
-    const drain = source.slice(
-      source.indexOf("const flushPendingWrites"),
-      source.indexOf("const handleData"),
+    const drain = flat(
+      source.slice(
+        source.indexOf("const flushPendingWrites"),
+        source.indexOf("const handleData"),
+      ),
     );
     expect(drain.length).toBeGreaterThan(0);
     expect(drain).toContain("reportWriteFailure(");
-    expect(drain).toContain("\"drain\",");
+    expect(drain).toMatch(/reportWriteFailure\(\s*"drain"/);
     expect(drain).toContain("if (writeStopRef.current) return;");
     expect(drain.indexOf("if (writeStopRef.current) return;")).toBeLessThan(
       drain.indexOf("terminalRef.current?.write(chunk.bytes);"),
@@ -638,7 +647,7 @@ describe("write failures stay visible and fail stop", () => {
     expect(source).toContain("pendingWritesRef.current = [];");
     expect(source).toContain("setReloadNonce((current) => current + 1);");
     expect(source).toContain('className="wterm-write-failure"');
-    expect(source).toContain(
+    expect(flat(source)).toContain(
       'role={writeFailure.kind === "core" ? "alert" : "status"}',
     );
     expect(source).toContain("Reload terminal");
@@ -646,7 +655,9 @@ describe("write failures stay visible and fail stop", () => {
     expect(source).toContain("throw new WtermResponseDeliveryError();");
     expect(source).toContain("firstDeliveredSeqRef.current === null");
     // No blind replay of a chunk that may have been applied.
-    expect(source).not.toMatch(/terminalRef\.current\?\.write\([^)]*\)[\s\S]{0,200}?catch[\s\S]{0,120}?terminalRef\.current\?\.write/);
+    expect(source).not.toMatch(
+      /terminalRef\.current\?\.write\([^)]*\)[\s\S]{0,200}?catch[\s\S]{0,120}?terminalRef\.current\?\.write/,
+    );
   });
 
   it("tags response-delivery throws without logging the raw exception", () => {
