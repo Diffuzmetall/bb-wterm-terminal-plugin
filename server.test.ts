@@ -171,6 +171,7 @@ describe("Wterm server boundaries", () => {
       "listWtermTabs",
       "openWterm",
       "closeWterm",
+      "threadFileSource",
     ]);
     expect(route).toHaveBeenCalledWith(
       "POST",
@@ -190,6 +191,70 @@ describe("Wterm server boundaries", () => {
       expect.any(Function),
       { auth: "token" },
     );
+  });
+
+  it("reports the thread workspace a terminal file link belongs to", async () => {
+    const register = vi.fn();
+    const get = vi.fn(async ({ include }: { include?: string }) =>
+      include === "environment"
+        ? {
+            id: "thread-1",
+            environment: {
+              hostId: "host-1",
+              id: "environment-1",
+              path: "/workspace",
+            },
+          }
+        : { id: "thread-1", environmentId: "environment-1" },
+    );
+    const bb = {
+      http: { route: vi.fn() },
+      rpc: { register },
+      sdk: { threads: { get } },
+      settings: { define: vi.fn() },
+    } as never;
+    plugin(bb);
+    const handlers = register.mock.calls[0]?.[1];
+
+    await expect(
+      handlers.threadFileSource({ threadId: "thread-1" }),
+    ).resolves.toEqual({
+      environmentId: "environment-1",
+      rootPath: "/workspace",
+      hostId: "host-1",
+    });
+    expect(get).toHaveBeenCalledWith({
+      threadId: "thread-1",
+      include: "environment",
+    });
+  });
+
+  it("reports no workspace when the environment has no usable path", async () => {
+    const register = vi.fn();
+    const handlerFor = (environment: unknown) => {
+      const bb = {
+        http: { route: vi.fn() },
+        rpc: { register },
+        sdk: {
+          threads: { get: vi.fn(async () => ({ id: "t", environment })) },
+        },
+        settings: { define: vi.fn() },
+      } as never;
+      register.mockClear();
+      plugin(bb);
+      return register.mock.calls[0]?.[1].threadFileSource as (input: {
+        threadId: string;
+      }) => Promise<unknown>;
+    };
+
+    await expect(
+      handlerFor(null)({ threadId: "thread-1" }),
+    ).resolves.toBeNull();
+    await expect(
+      handlerFor({ hostId: "host-1", id: "environment-1", path: null })({
+        threadId: "thread-1",
+      }),
+    ).resolves.toBeNull();
   });
 
   it("resolves and serves source and built renderer assets", async () => {

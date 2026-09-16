@@ -11,8 +11,9 @@ This repository is an early public preview. The plugin ID is
 `wterm-terminal-preview`, so it can coexist with BB's bundled
 `wterm-terminal` while the integration is evaluated.
 
-The current release is `v0.4.0`. It adds clickable OSC 8 web/file links,
-bounded Kitty Graphics rendering, and optional full-page Herdr/Wterm launchers.
+The latest tag is `v0.4.0`. The `main` branch adds plain-text link detection on
+top of its clickable OSC 8 web/file links, next to the existing bounded Kitty
+Graphics rendering and optional full-page Herdr/Wterm launchers.
 
 ## Features
 
@@ -29,8 +30,8 @@ bounded Kitty Graphics rendering, and optional full-page Herdr/Wterm launchers.
 - Keyboard, resize, wheel, click, and button-drag mouse input for terminal UIs.
 - Persistent font size controls from 10px to 24px.
 - Native, character-level text selection contained inside the terminal and copied on selection. The copy event is scoped to the terminal, so surrounding BB message rows are never included.
-- OSC 8 hyperlinks: ordinary clicks open HTTP(S) links through BB's browser
-  preference, while absolute `file://` links open in BB's file preview.
+- OSC 8 hyperlinks and plain-text link detection: see
+  [Terminal links](#terminal-links).
 - Kitty Graphics direct PNG/RGB/RGBA output with bounded image storage and
   upstream placement/scrollback/resize handling.
 - OSC 52 clipboard writes from TUIs such as Herdr, plus cell-based copy-on-drag while mouse tracking is enabled. Copy uses a synchronous clipboard write during the pointer gesture so it still works when async clipboard permission is missing.
@@ -38,6 +39,63 @@ bounded Kitty Graphics rendering, and optional full-page Herdr/Wterm launchers.
 - Files are written on the terminal host and their quoted path is inserted at
   the prompt using bracketed paste.
 - Compatibility with BB hosts that expose the legacy terminal WebSocket.
+
+## Terminal links
+
+Every clickable thing in the terminal goes through one handler, fed by two
+sources.
+
+**OSC 8 hyperlinks.** When a program emits them, the anchor is rendered as
+given and clicked as given. Most TUIs only do that when they recognize the
+terminal, and a BB terminal session does not identify itself — `pi-tui`, for
+example, stays silent when `TERM_PROGRAM` is unset, which is the usual case
+here.
+
+**Plain-text links.** Output that arrives as plain text is scanned after each
+render, and tokens that are plainly links become the same `a.term-link` anchors:
+
+- `https://…` / `http://…` URLs;
+- absolute paths such as `/var/log/app.log` or `file:///tmp/notes.md`;
+- workspace-relative paths such as `docs/README.md`;
+- `path:line` and `path:line:column` locations, which open at that position.
+
+The scan runs per row on the rows that changed, inside a 4 ms per-frame budget,
+so a long scrollback is not held up. It stays deliberately narrow — a false link
+is worse than a missed one:
+
+- a token must contain a separator and end in something that looks like a file
+extension, so `3/4.5`, `and/or` and `v1.2.3` are left alone;
+- glob patterns (`**/src/*.ts`) are ignored;
+- a home shorthand (`~/notes.md`) is ignored, because it cannot be resolved
+without the home directory and a literal `~/notes.md` would open the wrong file;
+- a link that a wrapped row cut in two is not linked at all: a row that filled
+the last column and the row after it hold fragments, not links.
+
+### Where a link opens
+
+| Link | Destination |
+| --- | --- |
+| `http(s)://…` | BB's browser preference (`navigate.openUrl`), with `window.open` as the fallback. Only `http:` and `https:` are ever handed over, re-checked at the sink. |
+| Path inside the thread's workspace | BB's file-opener pipeline as a `workspace` file — the same identity rendered Markdown uses, so per-extension opener preferences apply. |
+| Path outside the workspace, or a terminal with no thread workspace | BB's file-opener pipeline as a `host` file, on the session's host. |
+
+A relative path is resolved against the directory the terminal was opened in
+(the panel asks the server for the thread workspace through the
+`threadFileSource` RPC). Segments that would climb out of the workspace fall
+back to the host route, and a relative path on a terminal without a workspace is
+not opened at all.
+
+### Choosing the viewer
+
+BB renders the first applicable file opener for an extension unless one is
+pinned, so a third-party opener does not win on its own. To open terminal links
+in the **Files** plugin, pin it under **Settings → Files** for the extensions you
+care about (*Automatic* restores the built-in choice). BB's own preview and
+file-manager openers are the defaults for most extensions.
+
+Terminal output is untrusted: any program can print a path or emit OSC 8. Both
+routes re-validate what they open, so a link can only ask BB to display a page or
+a file.
 
 ## Requirements
 
@@ -56,6 +114,9 @@ Install the pinned release:
 bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.4.0' --yes
 bb plugin source wterm-terminal-preview
 ```
+
+To run the current `main` instead — which is where the link handling described
+below lives until it is tagged — install `@main`.
 
 Open a BB thread and choose **Wterm terminal** from the new-tab menu. Each
 activation, including **+** for another tab, creates a new terminal session.

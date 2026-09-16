@@ -97,6 +97,17 @@ export const wtermRpcContract = defineRpcContract({
 		input: z.object({ terminalId: z.string().min(1) }),
 		output: session,
 	},
+	threadFileSource: {
+		input: z.object({ threadId: z.string().min(1) }),
+		output: z.union([
+			z.object({
+				environmentId: z.string().min(1),
+				rootPath: z.string().min(1),
+				hostId: z.string().min(1),
+			}),
+			z.null(),
+		]),
+	},
 });
 type Session = z.infer<typeof session>;
 
@@ -843,6 +854,21 @@ export default function plugin(bb: BbPluginApi) {
 				);
 			});
 			return mapSession(replacement);
+		},
+		async threadFileSource({ threadId }) {
+			// A file link from the terminal belongs to the thread's workspace, so
+			// the host can resolve it (and its openers) the same way it resolves a
+			// link in rendered Markdown. Host paths are the fallback.
+			const thread = await bb.sdk.threads.get({ threadId, include: "environment" });
+			if (!("environment" in thread)) return null;
+			const environment = thread.environment;
+			if (environment === undefined || environment === null) return null;
+			if (environment.path === null || environment.path.length === 0) return null;
+			return {
+				environmentId: environment.id,
+				rootPath: environment.path,
+				hostId: environment.hostId,
+			};
 		},
 	});
 	bb.http.route("POST", UPLOAD_PATH, (context) => handleUpload(bb, context), {

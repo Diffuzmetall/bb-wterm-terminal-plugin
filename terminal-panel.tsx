@@ -11,14 +11,19 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import type { PluginThreadPanelProps } from "@bb/plugin-sdk/app";
-import { useBbNavigate } from "@bb/plugin-sdk/app";
+import { useBbNavigate, useRpc } from "@bb/plugin-sdk/app";
+import type { wtermRpcContract } from "./server.js";
 import {
   useLegacyTerminalAttachment,
   type TerminalAttachment,
 } from "./terminal-attachment.js";
 import { preloadTerminalAssets, TerminalRenderer } from "./wterm-renderer.js";
 import { PLUGIN_ID, getPluginToken } from "./plugin-token.js";
-import { terminalLinkAction } from "./terminal-links.js";
+import { safeWebHref, terminalLinkAction } from "./terminal-links.js";
+import {
+  terminalFileOpen,
+  type TerminalFileSource,
+} from "./terminal-file-target.js";
 import type { PickerSession } from "./picker-state.js";
 import { toast } from "sonner";
 
@@ -215,30 +220,58 @@ export function TerminalWithUpload({
   toolbarTargetId?: string;
 }) {
   const navigate = useBbNavigate();
+  const rpc = useRpc<typeof wtermRpcContract>();
+  // Only the click handler reads the workspace, so a ref is enough: the fetch
+  // must not re-render the terminal.
+  const fileSourceRef = useRef<TerminalFileSource | null>(null);
+
+  useEffect(() => {
+    if (!threadId) return;
+    let current = true;
+    void rpc
+      .call("threadFileSource", { threadId })
+      .then((source) => {
+        if (!current) return;
+        fileSourceRef.current = source;
+      })
+      .catch(() => {
+        // A missing workspace is not an error: host paths still open.
+      });
+    return () => {
+      current = false;
+    };
+  }, [rpc, threadId]);
+
   const openTerminalLink = useCallback(
     (href: string): boolean => {
       const action = terminalLinkAction(href);
       if (!action) return false;
       if (action.kind === "url") {
-        if (navigate.openUrl(action.url)) return true;
-        return (
-          window.open(action.url, "_blank", "noopener,noreferrer") !== null
-        );
+        // The href reached the DOM, so a parsed web URL is re-derived at the
+        // sink: nothing but `http(s)` is ever handed to the browser, and a
+        // terminal link is meant to reach whatever page it names.
+        const webHref = safeWebHref(action.url);
+        if (webHref === null) return true;
+        if (navigate.openUrl(webHref)) return true;
+        return window.open(webHref, "_blank", "noopener,noreferrer") !== null;
       }
-      if (!session?.hostId) {
+      const open = terminalFileOpen({
+        action,
+        source: fileSourceRef.current,
+        initialCwd: session?.initialCwd ?? null,
+        hostId: session?.hostId ?? null,
+      });
+      if (!open) {
         toast.error("This terminal has no file host to open the link on.");
         return true;
       }
-      const opened = navigate.experimental_openFilePreview({
-        target: { kind: "host", hostId: session.hostId, path: action.path },
-        location: null,
-      });
+      const opened = navigate.experimental_openFilePreview(open);
       if (!opened) {
         toast.error("BB could not open this terminal file.");
       }
       return true;
     },
-    [navigate, session?.hostId],
+    [navigate, session?.hostId, session?.initialCwd],
   );
   const [transfer, setTransfer] = useState<TransferState>({ kind: "idle" });
   const [fontSize, setFontSize] = useState(readTerminalFontSize);

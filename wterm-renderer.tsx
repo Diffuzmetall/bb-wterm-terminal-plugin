@@ -17,6 +17,7 @@ import {
   WtermStreamDigest,
 } from "./wterm-performance.ts";
 import { terminalLinkAction, terminalLinkHref } from "./terminal-links.js";
+import { attachTerminalAutoLinksWhenReady } from "./terminal-autolink-dom.js";
 import { getPluginToken } from "./plugin-token.js";
 import {
   Osc52ClipboardFilter,
@@ -905,6 +906,13 @@ export function WtermRenderer({
       if (settleFrame !== null) window.cancelAnimationFrame(settleFrame);
     };
   }, [fontSizePx]);
+
+  useEffect(() => {
+    if (!ready) return;
+    return attachTerminalAutoLinksWhenReady(
+      () => terminalRef.current?.instance?.element ?? null,
+    );
+  }, [ready, reloadNonce]);
 
   useEffect(
     () => () => {

@@ -37,7 +37,7 @@ describe("Ghostty core wrapper", () => {
 
     const afterChunk = vi.fn();
     expect(() => {
-      core.writeRaw(encodeLatin1("hello\x1b]52;c;YQ==\x07world"), afterChunk);
+      core.writeRaw(encodeLatin1("hello\x1b]52;c;YWJj\x07world"), afterChunk);
       core.writeString("plain\n", afterChunk);
       core.writeRaw(new Uint8Array(4096).fill(65));
     }).not.toThrow();
@@ -147,6 +147,9 @@ describe("Ghostty core wrapper", () => {
     expect(terminalLinkAction(core.getCell(1, 0).linkUri ?? "")).toEqual({
       kind: "file",
       path: "/workspace/src/app.ts",
+      absolute: true,
+      line: null,
+      column: null,
     });
   });
 });
