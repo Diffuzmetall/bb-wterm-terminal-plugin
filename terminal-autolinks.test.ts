@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+	continuesTerminalRow,
 	isPartialAutoLink,
+	planTerminalAutoLinks,
 	scanTerminalAutoLinks,
 } from "./terminal-autolinks.js";
 
@@ -151,9 +153,9 @@ describe("isPartialAutoLink", () => {
 
 describe("home shorthand", () => {
 	it("leaves `~/…` as plain text because home is unknown", () => {
-		expect(scanTerminalAutoLinks("see ~/Projects/app/src/main.ts for it")).toEqual(
-			[],
-		);
+		expect(
+			scanTerminalAutoLinks("see ~/Projects/app/src/main.ts for it"),
+		).toEqual([]);
 		expect(scanTerminalAutoLinks("~/notes.md")).toEqual([]);
 	});
 
@@ -161,5 +163,126 @@ describe("home shorthand", () => {
 		expect(
 			scanTerminalAutoLinks("see Projects/app/src/main.ts").map((l) => l.kind),
 		).toEqual(["file"]);
+	});
+});
+
+/** Rows as the renderer produces them: full width, padded with spaces. */
+function renderedRows(line: string, width: number): string[] {
+	const rows: string[] = [];
+	for (let index = 0; index < line.length; index += width) {
+		rows.push(line.slice(index, index + width).padEnd(width, " "));
+	}
+	return rows;
+}
+
+describe("continuesTerminalRow", () => {
+	it("reads a wrap only from a full row and a mid-token start", () => {
+		expect(continuesTerminalRow(["a".repeat(10), "more"], 1)).toBe(true);
+		expect(continuesTerminalRow(["short     ", "more"], 1)).toBe(false);
+		expect(continuesTerminalRow(["a".repeat(10), "  indented"], 1)).toBe(false);
+		expect(continuesTerminalRow(["a".repeat(10)], 0)).toBe(false);
+	});
+});
+
+describe("planTerminalAutoLinks", () => {
+	it("stitches a path a wrap split across two rows", () => {
+		const path =
+			"/home/ubuntu/Projects/bb-wterm-terminal-plugin/terminal-autolinks.ts";
+		const rows = renderedRows(path, 40);
+		expect(rows).toHaveLength(2);
+		const placements = planTerminalAutoLinks(rows);
+		expect(placements.map((p) => [p.rowIndex, p.start, p.end])).toEqual([
+			[0, 0, 40],
+			[1, 0, path.length - 40],
+		]);
+		for (const placement of placements) {
+			expect(placement.link).toMatchObject({
+				kind: "file",
+				path,
+				absolute: true,
+			});
+		}
+	});
+
+	it("stitches a URL a wrap split across three rows", () => {
+		const url = `${ORIGIN}/${["a", "longer", "and", "longer", "still", "index.md"].join("/")}`;
+		const rows = renderedRows(url, 22);
+		expect(rows.length).toBeGreaterThanOrEqual(3);
+		const placements = planTerminalAutoLinks(rows);
+		expect(placements).toHaveLength(rows.length);
+		for (const placement of placements) {
+			expect(placement.link).toMatchObject({ kind: "url", url });
+		}
+	});
+
+	it("stitches a path whose wrap lands on a slash", () => {
+		const path =
+			"/home/ubuntu/Projects/bb-wterm-terminal-plugin/terminal-autolinks.ts";
+		const split = path.indexOf("/bb-wterm");
+		const prefix = "x".repeat(52 - 1 - split);
+		const rows = [
+			`${prefix} ${path.slice(0, split)}`,
+			`${path.slice(split)}`.padEnd(52, " "),
+		];
+		expect(rows[0]).toHaveLength(52);
+		expect(rows[1]?.startsWith("/")).toBe(true);
+		const placements = planTerminalAutoLinks(rows);
+		expect(placements.map((p) => [p.rowIndex, p.start, p.end])).toEqual([
+			[0, prefix.length + 1, 52],
+			[1, 0, path.length - split],
+		]);
+		for (const placement of placements) {
+			expect(placement.link).toMatchObject({ kind: "file", path });
+		}
+	});
+
+	it("leaves a wrapped fragment as text until its row arrives", () => {
+		const path =
+			"/home/ubuntu/Projects/bb-wterm-terminal-plugin/terminal-autolinks.ts";
+		const [firstRow] = renderedRows(path, 40);
+		expect(planTerminalAutoLinks([firstRow ?? ""])).toEqual([]);
+		expect(planTerminalAutoLinks(renderedRows(path, 40))).toHaveLength(2);
+	});
+
+	it("keeps a line and column that a wrap pushed to the next row", () => {
+		const path =
+			"/home/ubuntu/Projects/bb-wterm-terminal-plugin/terminal-autolink-dom.ts";
+		const rows = renderedRows(`${path}:42:7`, 44);
+		expect(rows).toHaveLength(2);
+		const placements = planTerminalAutoLinks(rows);
+		expect(placements).toHaveLength(2);
+		const [first, second] = placements;
+		expect(first?.link).toMatchObject({ path, line: 42, column: 7 });
+		expect(second?.link).toMatchObject({ path, line: 42, column: 7 });
+	});
+
+	it("links rows that are separate lines, not one wrap", () => {
+		const rows = [
+			"docs/portability.md".padEnd(30, " "),
+			"/tmp/report.ts".padEnd(30, " "),
+		];
+		const placements = planTerminalAutoLinks(rows);
+		expect(placements.map((p) => [p.rowIndex, p.start, p.end])).toEqual([
+			[0, 0, "docs/portability.md".length],
+			[1, 0, "/tmp/report.ts".length],
+		]);
+		expect(placements[0]?.link).toMatchObject({ path: "docs/portability.md" });
+		expect(placements[1]?.link).toMatchObject({ path: "/tmp/report.ts" });
+	});
+
+	it("splits two links on one row without nesting them", () => {
+		const text = "a src/app.ts and /tmp/b.md";
+		const placements = planTerminalAutoLinks([text.padEnd(40, " ")]);
+		expect(placements).toHaveLength(2);
+		const [first, second] = placements;
+		if (!first || !second) throw new Error("expected two placements");
+		expect(first.end).toBeLessThanOrEqual(second.start);
+		expect(text.slice(first.start, first.end)).toBe("src/app.ts");
+		expect(text.slice(second.start, second.end)).toBe("/tmp/b.md");
+	});
+
+	it("returns nothing for rows without links", () => {
+		expect(planTerminalAutoLinks([])).toEqual([]);
+		expect(planTerminalAutoLinks(["plain output".padEnd(20, " ")])).toEqual([]);
 	});
 });

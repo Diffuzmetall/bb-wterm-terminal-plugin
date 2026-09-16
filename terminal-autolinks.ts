@@ -142,9 +142,8 @@ export function scanTerminalAutoLinks(text: string): TerminalAutoLink[] {
 }
 
 /**
- * Whether a match is only a fragment of a link that a wrapped row cut in two.
- * A row that filled the last column was cut mid-line, and the row after it
- * starts mid-token: linking either fragment would open the wrong target.
+ * Whether a match is only a fragment of a link the terminal has not finished
+ * painting: the row filled its last column and no row follows it yet.
  */
 export function isPartialAutoLink(
 	link: TerminalAutoLink,
@@ -154,4 +153,102 @@ export function isPartialAutoLink(
 	if (boundaries.continues && link.start === 0) return true;
 	const trimmedEnd = text.replace(/\s+$/u, "").length;
 	return boundaries.wrapped && link.end >= trimmedEnd;
+}
+
+/**
+ * One row of a rendered terminal, as far as link scanning is concerned.
+ *
+ * A rendered row is padded to the terminal width, so a row that has no
+ * trailing whitespace is a row whose last column was written: the terminal
+ * wrapped there instead of ending the line.
+ */
+function rowFilled(text: string): boolean {
+	return text.length > 0 && !/\s$/u.test(text);
+}
+
+/**
+ * Whether a row starts mid-token because the row above was wrapped.
+ *
+ * A rendered row is padded to the terminal width, so a row with no trailing
+ * whitespace wrote its last column and the terminal wrapped there. A
+ * continuation starts with the very next character, never with whitespace.
+ *
+ * The one case this cannot separate is two paths printed on consecutive rows
+ * that both fill the row: they read as one token. Joining is still the better
+ * error — a wrapped path is common and a path that ends exactly on the last
+ * column of a full row is not — and the joined target simply fails to open.
+ */
+export function continuesTerminalRow(texts: string[], index: number): boolean {
+	if (index <= 0) return false;
+	if (!rowFilled(texts[index - 1] ?? "")) return false;
+	const text = texts[index] ?? "";
+	return text.length > 0 && !/^\s/u.test(text);
+}
+
+/** One fragment of a link, addressed inside one rendered row. */
+export interface TerminalAutoLinkPlacement {
+	rowIndex: number;
+	start: number;
+	end: number;
+	link: TerminalAutoLink;
+}
+
+/**
+ * Find the links in a stack of rendered rows, stitching together the rows a
+ * terminal wrap split in two.
+ *
+ * A path longer than the terminal is written across two rows, and neither
+ * half is a link on its own — the first has no file name, the second no
+ * directory. Reading the wrapped rows as one line recovers the real target,
+ * and the returned placements carry the same `link` for every fragment so one
+ * click opens it from either row.
+ */
+export function planTerminalAutoLinks(
+	texts: string[],
+): TerminalAutoLinkPlacement[] {
+	const placements: TerminalAutoLinkPlacement[] = [];
+	const groups: number[][] = [];
+	let current: number[] = [];
+	for (let index = 0; index < texts.length; index += 1) {
+		if (index > 0 && !continuesTerminalRow(texts, index)) {
+			groups.push(current);
+			current = [];
+		}
+		current.push(index);
+	}
+	if (current.length > 0) groups.push(current);
+
+	for (const group of groups) {
+		const offsets: number[] = [];
+		let joined = "";
+		for (const rowIndex of group) {
+			offsets.push(joined.length);
+			joined += texts[rowIndex] ?? "";
+		}
+		const last = group.at(-1) ?? 0;
+		// A token that reaches the end of a full final row may still continue
+		// in a row the terminal has not painted yet, so it stays text until the
+		// rest of it arrives.
+		const openEnd = last === texts.length - 1 && rowFilled(texts[last] ?? "");
+		const trimmedEnd = joined.replace(/\s+$/u, "").length;
+
+		for (const link of scanTerminalAutoLinks(joined)) {
+			if (openEnd && link.end >= trimmedEnd) continue;
+			for (const [position, rowIndex] of group.entries()) {
+				const from = offsets[position] ?? 0;
+				const to = from + (texts[rowIndex] ?? "").length;
+				const start = Math.max(link.start, from);
+				const end = Math.min(link.end, to);
+				if (end <= start) continue;
+				placements.push({
+					rowIndex,
+					start: start - from,
+					end: end - from,
+					link,
+				});
+			}
+		}
+	}
+
+	return placements;
 }

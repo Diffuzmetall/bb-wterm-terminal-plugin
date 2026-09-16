@@ -68,8 +68,11 @@ extension, so `3/4.5`, `and/or` and `v1.2.3` are left alone;
 - glob patterns (`**/src/*.ts`) are ignored;
 - a home shorthand (`~/notes.md`) is ignored, because it cannot be resolved
 without the home directory and a literal `~/notes.md` would open the wrong file;
-- a link that a wrapped row cut in two is not linked at all: a row that filled
-the last column and the row after it hold fragments, not links.
+- a link that a row wrap cut in two is stitched back together: rows that continue
+the same line are planned as one text, and each visible fragment becomes an anchor
+for the whole link. A row that filled its last column continues into the next one;
+while output is still streaming, a link whose last fragment sits on the final
+painted row is left alone until the next row settles it.
 
 ### Where a link opens
 
