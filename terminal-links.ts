@@ -21,7 +21,10 @@ function fileUriPath(uri: string): string | null {
 		const parsed = new URL(uri);
 		if (parsed.protocol !== "file:" || parsed.host !== "") return null;
 		const decodedPath = decodeURIComponent(parsed.pathname);
-		if (!decodedPath.startsWith("/") || /[\u0000-\u001f\u007f]/u.test(decodedPath)) {
+		if (
+			!decodedPath.startsWith("/") ||
+			/[\u0000-\u001f\u007f]/u.test(decodedPath)
+		) {
 			return null;
 		}
 		return decodedPath;
@@ -102,7 +105,10 @@ export function safeWebHref(href: string): string | null {
 export function terminalLinkAction(href: string): TerminalLinkAction | null {
 	try {
 		const parsed = new URL(href);
-		if (parsed.origin === FILE_LINK_ORIGIN && parsed.pathname === FILE_LINK_PATH) {
+		if (
+			parsed.origin === FILE_LINK_ORIGIN &&
+			parsed.pathname === FILE_LINK_PATH
+		) {
 			const relative = parsed.searchParams.get("path");
 			const uri = parsed.searchParams.get("uri");
 			let path: string | null = null;

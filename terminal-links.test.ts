@@ -28,7 +28,9 @@ describe("terminalLinkHref", () => {
 	it("rejects unsafe schemes, relative files, and remote file hosts", () => {
 		expect(terminalLinkHref("javascript:alert(1)")).toBeUndefined();
 		expect(terminalLinkHref("file:relative.txt")).toBeUndefined();
-		expect(terminalLinkHref("file://other-host/workspace/app.ts")).toBeUndefined();
+		expect(
+			terminalLinkHref("file://other-host/workspace/app.ts"),
+		).toBeUndefined();
 	});
 });
 
@@ -99,7 +101,9 @@ describe("terminalLinkAction", () => {
 
 	it("does not treat arbitrary marker URLs as files", () => {
 		expect(
-			terminalLinkAction("https://wterm.invalid/__bb_wterm_file__?uri=javascript%3Aalert(1)"),
+			terminalLinkAction(
+				"https://wterm.invalid/__bb_wterm_file__?uri=javascript%3Aalert(1)",
+			),
 		).toBeNull();
 	});
 });

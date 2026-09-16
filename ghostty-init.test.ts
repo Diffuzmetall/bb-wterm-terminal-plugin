@@ -22,7 +22,12 @@ describe("Ghostty core wrapper", () => {
   it("inits, ignores a second init, and survives OSC 52 writes", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(wasmBytes, { headers: { "content-type": "application/wasm" } })),
+      vi.fn(
+        async () =>
+          new Response(wasmBytes, {
+            headers: { "content-type": "application/wasm" },
+          }),
+      ),
     );
     const core = supportAnyEventMouseMode(
       await GhosttyCore.load({ wasmPath: "http://wterm.test/ghostty-vt.wasm" }),
@@ -47,7 +52,12 @@ describe("Ghostty core wrapper", () => {
   it("accepts a direct Kitty RGB image and exposes bounded graphics state", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(wasmBytes, { headers: { "content-type": "application/wasm" } })),
+      vi.fn(
+        async () =>
+          new Response(wasmBytes, {
+            headers: { "content-type": "application/wasm" },
+          }),
+      ),
     );
     const core = supportAnyEventMouseMode(
       await GhosttyCore.load({
@@ -66,15 +76,20 @@ describe("Ghostty core wrapper", () => {
     expect(core.getResourceState().graphics?.capacity).toBe(32 * 1024 * 1024);
     const image = graphics?.images[0];
     expect(image).toBeDefined();
-    expect(core.getGraphicsImage?.(image!.imageId, image!.version)?.rgba).toEqual(
-      new Uint8Array([0, 255, 0, 255]),
-    );
+    expect(
+      core.getGraphicsImage?.(image!.imageId, image!.version)?.rgba,
+    ).toEqual(new Uint8Array([0, 255, 0, 255]));
   });
 
   it("tracks fragmented DEC 1003 enable and disable sequences", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(wasmBytes, { headers: { "content-type": "application/wasm" } })),
+      vi.fn(
+        async () =>
+          new Response(wasmBytes, {
+            headers: { "content-type": "application/wasm" },
+          }),
+      ),
     );
     const core = supportAnyEventMouseMode(
       await GhosttyCore.load({ wasmPath: "http://wterm.test/ghostty-vt.wasm" }),
@@ -111,7 +126,12 @@ describe("Ghostty core wrapper", () => {
   it("ignores collapsed 1x1 init and resize from a hidden tab", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(wasmBytes, { headers: { "content-type": "application/wasm" } })),
+      vi.fn(
+        async () =>
+          new Response(wasmBytes, {
+            headers: { "content-type": "application/wasm" },
+          }),
+      ),
     );
     const core = supportAnyEventMouseMode(
       await GhosttyCore.load({ wasmPath: "http://wterm.test/ghostty-vt.wasm" }),
@@ -132,7 +152,12 @@ describe("Ghostty core wrapper", () => {
   it("exposes OSC 8 web and file links through the renderer-safe core wrapper", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(wasmBytes, { headers: { "content-type": "application/wasm" } })),
+      vi.fn(
+        async () =>
+          new Response(wasmBytes, {
+            headers: { "content-type": "application/wasm" },
+          }),
+      ),
     );
     const core = supportAnyEventMouseMode(
       await GhosttyCore.load({ wasmPath: "http://wterm.test/ghostty-vt.wasm" }),
@@ -154,14 +179,18 @@ describe("Ghostty core wrapper", () => {
   });
 });
 
-const preflightScript = fileURLToPath(new URL("./scripts/wterm-build-preflight.mjs", import.meta.url));
+const preflightScript = fileURLToPath(
+  new URL("./scripts/wterm-build-preflight.mjs", import.meta.url),
+);
 
-async function makePreflightFixture(options: {
-  missing?: string;
-  installedCoreVersion?: string;
-  rootPinPackage?: string;
-  wasmMatches?: boolean;
-} = {}) {
+async function makePreflightFixture(
+  options: {
+    missing?: string;
+    installedCoreVersion?: string;
+    rootPinPackage?: string;
+    wasmMatches?: boolean;
+  } = {},
+) {
   const root = await mkdtemp(join(tmpdir(), "wterm-preflight-fixture-"));
   const version = "0.5.0";
   const packages = {
@@ -170,13 +199,35 @@ async function makePreflightFixture(options: {
     "@wterm/ghostty": { version, dependencies: { "@wterm/core": version } },
     "@wterm/react": {
       version,
-      peerDependencies: { "@wterm/dom": version, react: "^18.0.0 || ^19.0.0", "react-dom": "^18.0.0 || ^19.0.0" },
+      peerDependencies: {
+        "@wterm/dom": version,
+        react: "^18.0.0 || ^19.0.0",
+        "react-dom": "^18.0.0 || ^19.0.0",
+      },
     },
   };
-  const dependencies = Object.fromEntries(Object.keys(packages).filter((name) => name !== "@wterm/core").map((name) => [name, options.rootPinPackage === name ? "0.4.0" : version]));
-  const lockPackages = Object.fromEntries(Object.entries(packages).map(([name, metadata]) => [`node_modules/${name}`, metadata]));
+  const dependencies = Object.fromEntries(
+    Object.keys(packages)
+      .filter((name) => name !== "@wterm/core")
+      .map((name) => [
+        name,
+        options.rootPinPackage === name ? "0.4.0" : version,
+      ]),
+  );
+  const lockPackages = Object.fromEntries(
+    Object.entries(packages).map(([name, metadata]) => [
+      `node_modules/${name}`,
+      metadata,
+    ]),
+  );
   await writeFile(join(root, "package.json"), JSON.stringify({ dependencies }));
-  await writeFile(join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: { "": { dependencies }, ...lockPackages } }));
+  await writeFile(
+    join(root, "package-lock.json"),
+    JSON.stringify({
+      lockfileVersion: 3,
+      packages: { "": { dependencies }, ...lockPackages },
+    }),
+  );
   await writeFile(join(root, "ghostty-vt.wasm"), Buffer.from("repo wasm"));
 
   for (const [name, metadata] of Object.entries(packages)) {
@@ -184,18 +235,31 @@ async function makePreflightFixture(options: {
     const packageRoot = join(root, "node_modules", ...name.split("/"));
     await mkdir(packageRoot, { recursive: true });
     const installed = { ...metadata };
-    if (name === "@wterm/core" && options.installedCoreVersion) installed.version = options.installedCoreVersion;
-    await writeFile(join(packageRoot, "package.json"), JSON.stringify(installed));
+    if (name === "@wterm/core" && options.installedCoreVersion)
+      installed.version = options.installedCoreVersion;
+    await writeFile(
+      join(packageRoot, "package.json"),
+      JSON.stringify(installed),
+    );
     if (name === "@wterm/ghostty") {
       await mkdir(join(packageRoot, "wasm"), { recursive: true });
-      await writeFile(join(packageRoot, "wasm", "ghostty-vt.wasm"), Buffer.from(options.wasmMatches === false ? "different wasm" : "repo wasm"));
+      await writeFile(
+        join(packageRoot, "wasm", "ghostty-vt.wasm"),
+        Buffer.from(
+          options.wasmMatches === false ? "different wasm" : "repo wasm",
+        ),
+      );
     }
   }
   return root;
 }
 
 function runPreflight(root: string, args: string[] = []) {
-  return spawnSync(process.execPath, [preflightScript, "--root", root, ...args], { encoding: "utf8" });
+  return spawnSync(
+    process.execPath,
+    [preflightScript, "--root", root, ...args],
+    { encoding: "utf8" },
+  );
 }
 
 describe("Wterm build preflight", () => {
@@ -207,17 +271,34 @@ describe("Wterm build preflight", () => {
     expect(result.stdout).toContain("WASM SHA-256");
 
     await mkdir(join(root, "dist"), { recursive: true });
-    const provenanceResult = runPreflight(root, ["--write-provenance", "dist/provenance.json"]);
+    const provenanceResult = runPreflight(root, [
+      "--write-provenance",
+      "dist/provenance.json",
+    ]);
     expect(provenanceResult.status).toBe(0);
-    const provenance = JSON.parse(await readFile(join(root, "dist/provenance.json"), "utf8"));
+    const provenance = JSON.parse(
+      await readFile(join(root, "dist/provenance.json"), "utf8"),
+    );
     expect(provenance.verifiedVersions["@wterm/ghostty"]).toBe("0.5.0");
     expect(provenance.wasm.sha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it.each([
-    ["missing package", { missing: "@wterm/dom" }, "@wterm/dom installed package.json is missing"],
-    ["wrong transitive core", { installedCoreVersion: "0.4.0" }, "installed core is 0.4.0"],
-    ["mismatched root pin", { rootPinPackage: "@wterm/dom" }, "root manifest pins 0.4.0"],
+    [
+      "missing package",
+      { missing: "@wterm/dom" },
+      "@wterm/dom installed package.json is missing",
+    ],
+    [
+      "wrong transitive core",
+      { installedCoreVersion: "0.4.0" },
+      "installed core is 0.4.0",
+    ],
+    [
+      "mismatched root pin",
+      { rootPinPackage: "@wterm/dom" },
+      "root manifest pins 0.4.0",
+    ],
     ["WASM", { wasmMatches: false }, "WASM mismatch"],
   ])("fails with a clear reason for %s", async (_name, options, reason) => {
     const result = runPreflight(await makePreflightFixture(options));
@@ -230,15 +311,32 @@ describe("Wterm build preflight", () => {
     const dist = join(root, "dist");
     await mkdir(dist, { recursive: true });
     await writeFile(join(dist, "manifest.json"), "previous manifest\\n");
-    await writeFile(join(root, "fake-bundler.mjs"), "import { writeFile } from 'node:fs/promises'; await writeFile('dist/bundler-ran', 'bad'); await writeFile('dist/manifest.json', 'new manifest\\n');");
-    const result = spawnSync("/bin/sh", ["-c", '"$NODE" "$SCRIPT" --root "$WTERM_FIXTURE" && "$NODE" fake-bundler.mjs'], {
-      cwd: root,
-      encoding: "utf8",
-      env: { ...process.env, NODE: process.execPath, SCRIPT: preflightScript, WTERM_FIXTURE: root },
-    });
+    await writeFile(
+      join(root, "fake-bundler.mjs"),
+      "import { writeFile } from 'node:fs/promises'; await writeFile('dist/bundler-ran', 'bad'); await writeFile('dist/manifest.json', 'new manifest\\n');",
+    );
+    const result = spawnSync(
+      "/bin/sh",
+      [
+        "-c",
+        '"$NODE" "$SCRIPT" --root "$WTERM_FIXTURE" && "$NODE" fake-bundler.mjs',
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          NODE: process.execPath,
+          SCRIPT: preflightScript,
+          WTERM_FIXTURE: root,
+        },
+      },
+    );
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("WASM mismatch");
-    expect(await readFile(join(dist, "manifest.json"), "utf8")).toBe("previous manifest\\n");
+    expect(await readFile(join(dist, "manifest.json"), "utf8")).toBe(
+      "previous manifest\\n",
+    );
     await expect(readFile(join(dist, "bundler-ran"), "utf8")).rejects.toThrow();
   });
 });
