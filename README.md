@@ -11,9 +11,11 @@ This repository is an early public preview. The plugin ID is
 `wterm-terminal-preview`, so it can coexist with BB's bundled
 `wterm-terminal` while the integration is evaluated.
 
-The latest tag is `v0.4.0`. The `main` branch adds plain-text link detection on
-top of its clickable OSC 8 web/file links, next to the existing bounded Kitty
-Graphics rendering and optional full-page Herdr/Wterm launchers.
+The latest tag is `v0.4.1`, and it matches `main`: clickable OSC 8 web/file
+links plus plain-text link detection for web URLs, workspace paths and host
+paths, with a link that a row wrap split in two rejoined before it is opened.
+The bounded Kitty Graphics rendering and the optional full-page Herdr/Wterm
+launchers are unchanged.
 
 ## Features
 
@@ -114,12 +116,11 @@ a file.
 Install the pinned release:
 
 ```sh
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.4.0' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.4.1' --yes
 bb plugin source wterm-terminal-preview
 ```
 
-To run the current `main` instead — which is where the link handling described
-below lives until it is tagged — install `@main`.
+To run the current `main` instead of a release tag, install `@main`.
 
 Open a BB thread and choose **Wterm terminal** from the new-tab menu. Each
 activation, including **+** for another tab, creates a new terminal session.
@@ -150,7 +151,7 @@ installed release explicitly:
 
 ```sh
 bb plugin remove wterm-terminal-preview
-bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.4.0' --yes
+bb plugin install 'git:github.com/Diffuzmetall/bb-wterm-terminal-plugin@v0.4.1' --yes
 bb plugin source wterm-terminal-preview
 ```
 
